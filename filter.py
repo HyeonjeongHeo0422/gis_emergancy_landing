@@ -12,6 +12,8 @@ from scipy.ndimage import gaussian_gradient_magnitude
 import matplotlib.colors as mcolors
 from haversine import haversine, Unit
 from scipy.spatial import KDTree
+import os
+import pickle
 
 #####################################################################
 # 1. 데이터 필터링
@@ -49,16 +51,37 @@ def load_data(exclusion_files, forest_file, soil_file, boundary_file):
     exclusion_data = gpd.GeoDataFrame(pd.concat(all_exclusion_data, ignore_index=True))
 
     # 남구 경계 데이터 생성
-    boundary_data = pd.read_csv(boundary_file)
-    boundary_coords = boundary_data[['Longitude', 'Latitude']].values
-    boundary_polygon = Polygon(boundary_coords)
-    boundary_gdf = gpd.GeoDataFrame(index=[0], crs='epsg:4326', geometry=[boundary_polygon])
+    # boundary_data = pd.read_csv(boundary_file)
+    # boundary_coords = boundary_data[['Longitude', 'Latitude']].values
+    # boundary_polygon = Polygon(boundary_coords)
+    # boundary_gdf = gpd.GeoDataFrame(index=[0], crs='epsg:4326', geometry=[boundary_polygon])
     
+    boundary_gdf = load_boundary_data(boundary_file)
+
     print('Data Load Complete!!')
     return exclusion_data, boundary_gdf
 
+def load_boundary_data(boundary_file):
+    """
+    주어진 boundary_file에서 경계 데이터를 로드하여 boundary_gdf로 변환합니다.
+    
+    :param boundary_file: 경계 파일 경로 (CSV 형식)
+    :return: boundary_gdf (GeoDataFrame)
+    """
+    # boundary_file에서 데이터 읽기
+    boundary_data = pd.read_csv(boundary_file)
+    
+    # 위도와 경도 좌표로부터 폴리곤 생성
+    boundary_coords = boundary_data[['Longitude', 'Latitude']].values
+    boundary_polygon = Polygon(boundary_coords)
+    
+    # GeoDataFrame으로 변환
+    boundary_gdf = gpd.GeoDataFrame(index=[0], crs='epsg:4326', geometry=[boundary_polygon])
+    
+    return boundary_gdf
+
 # 데이터 전처리
-def preprocess_data(exclusion_data, boundary_gdf):
+def first_filtering(exclusion_data, boundary_gdf):
     """
     :param exclusion_data: 제외할 영역 데이터
     :param boundary_gdf: 경계 데이터
@@ -80,7 +103,8 @@ def preprocess_data(exclusion_data, boundary_gdf):
         for geom in landing_able_sites.geoms:
             polygons.append(geom)
     
-    return polygons, boundary_gdf, exclusions_in_boundary, landing_able_sites
+    # return polygons, boundary_gdf, exclusions_in_boundary, landing_able_sites
+    return polygons
 
 #####################################################################
 # 2. 면적 필터링
@@ -116,6 +140,7 @@ def can_place_circle(polygon, radius):
         return False, None
 
     # 좌표계를 EPSG:3857로 변환
+    # EPSG:3857은 일반적으로 미터(meter) 단위를 사용하는 투영 좌표계
     polygon_3857 = gpd.GeoSeries([polygon], crs='EPSG:4326').to_crs(epsg=3857).iloc[0]
 
     # candidate_centers 생성 (좌표계 변환 후)
@@ -132,6 +157,30 @@ def can_place_circle(polygon, radius):
                 break  # 적합한 중심점을 찾았으므로 종료
 
     return best_center is not None, best_center if best_center else None
+
+# 2차 필터링 함수
+def second_filtering(polygons, radius):
+    """
+    :param polygons: 폴리곤 리스트
+    :param radius: 원의 반지름 (미터 단위)
+    :return: 필터링된 폴리곤 리스트와 데이터프레임
+    """
+    print('filter_landing_zones START!!')
+
+    # 진행률 표시를 위한 tqdm 사용
+    fit_results = [can_place_circle(polygon, radius) for polygon in tqdm(polygons, desc='Processing polygons')]
+
+    # 원이 들어갈 수 있는 폴리곤만 필터링
+    filtered_polygons = [polygon for polygon, result in zip(polygons, fit_results) if result[0]]
+    centers = [result[1] for result in fit_results if result[0]]
+
+    # 필터링된 결과로 데이터프레임 생성
+    polygons_df = pd.DataFrame({
+        'Polygon': filtered_polygons,
+        'Center Point': centers
+    })
+
+    return filtered_polygons, polygons_df
 
 # 후보지 선정
 def filter_landing_zones(polygons, radius):
@@ -213,11 +262,6 @@ def calculate_slopes_within_polygon(points, polygon, elevation_points):
         poly_center = polygon.centroid
         nearest_points = find_nearest_elevation_point(poly_center, elevation_points)
         points = pd.concat([nearest_points], ignore_index=True)
-        # if nearest_points is not None:
-        #     points = pd.concat([nearest_points], ignore_index=True)
-        # else:
-        #     print('주변에 고도점이 없을 경우')
-        #     return []  # 주변에 고도점이 없을 경우 빈 리스트 반환
 
     coords = np.array([p.coords[0] for p in points.geometry])
     elevations = points['NUME'].values
@@ -268,11 +312,20 @@ def add_elevation_to_polygons(polygons, elevation_points, elevation_contours, ta
     polygon_data = []
 
     for poly in polygons:
+        if elevation_points.crs != 'EPSG:4326':
+            elevation_points = elevation_points.to_crs('EPSG:4326')
+        if elevation_contours.crs != 'EPSG:4326':
+            elevation_contours = elevation_contours.to_crs('EPSG:4326')
+
         # 폴리곤 내의 고도 점 데이터
         points_within = elevation_points[elevation_points.geometry.within(poly)]
         contours_within = elevation_contours[elevation_contours.geometry.within(poly)]
         
-        if points_within.empty and contours_within.empty:
+        # if points_within.empty and contours_within.empty:
+        #     print('empty')
+        #     continue
+
+        if points_within.empty:
             continue
 
         # 고도 점 데이터에서 고도 추출
@@ -334,13 +387,91 @@ def save_results(landing_candidates, filepath):
     landing_candidates_df = landing_candidates[landing_candidates['Can Fit Circle']]
     landing_candidates_df[['Polygon']].to_csv(filepath, index=False)
 
+# filtered_polygons를 pickle 파일로 저장
+def save_polygons_to_pickle(polygons, filepath):
+    directory = os.path.dirname(filepath)
+    
+    # 디렉터리가 없으면 생성
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+
+    with open(filepath, 'wb') as f:
+        pickle.dump(polygons, f)
+    print(f"Polygons saved to {filepath}")
+
+# 저장된 pickle 파일 불러오기
+def load_polygons_from_pickle(filepath):
+    with open(filepath, 'rb') as f:
+        polygons = pickle.load(f)
+    return polygons
+
+
+# # 시각화 결과 저장
+# def save_visualization(fig, filepath):
+#     """
+#     :param fig: 시각화 결과가 포함된 matplotlib.figure.Figure 객체
+#     :param filepath: 저장할 파일 경로
+#     """
+#     fig.savefig(filepath)
+
 # 시각화 결과 저장
 def save_visualization(fig, filepath):
     """
     :param fig: 시각화 결과가 포함된 matplotlib.figure.Figure 객체
     :param filepath: 저장할 파일 경로
     """
-    fig.savefig(filepath)
+    # 디렉터리 존재 여부 확인 및 생성
+    directory = os.path.dirname(filepath)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory)
+    
+    # 시각화 결과를 지정된 경로에 저장
+    try:
+        fig.savefig(filepath, bbox_inches='tight')
+        print(f"Visualization saved at {filepath}")
+    except Exception as e:
+        print(f"Failed to save the visualization: {e}")
+
+# 결과 시각화
+# 1차 필터링 결과 시각화
+def visualize_filtered_polygons(boundary_gdf, filtered_polygons):
+    """
+    1차 필터링된 폴리곤을 시각화
+    :param boundary_gdf: 경계 데이터
+    :param filtered_polygons: 1차 필터링된 폴리곤 리스트 (shapely.geometry.Polygon 또는 MultiPolygon 객체)
+    :return: fig
+    """
+    # 시각화할 데이터가 있는지 확인
+    if not filtered_polygons:
+        print("No polygons to visualize.")
+        return None
+
+    # 시각화 준비    
+    fig, ax = plt.subplots(1, 1, figsize=(12, 12))
+
+    # 경계 데이터 시각화
+    boundary_gdf.plot(ax=ax, color='white', edgecolor='black')
+
+    # 필터링된 폴리곤 시각화
+    for poly in filtered_polygons:
+        gpd.GeoSeries([poly], crs='epsg:4326').plot(ax=ax, color='green', alpha=0.6)
+
+    # 수동으로 범례 생성
+    legend_patches = [
+        Patch(color='green', alpha=0.5, label='Landing Able Sites'),
+        Patch(facecolor='white', edgecolor='green', alpha=0.5, label='No landing Area')
+    ]
+    ax.legend(handles=legend_patches)
+
+    # 축 및 제목 설정
+    ax.set_xlabel('Longitude')
+    ax.set_ylabel('Latitude')
+    ax.set_title('Polygons with First Filtered Polygons')
+
+    # 결과 시각화 표시
+    plt.show()
+
+    return fig
 
 # 결과 시각화
 def visualize_results(boundary_gdf, landing_candidates, landing_able_sites, exclusions_in_boundary):

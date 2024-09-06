@@ -3,7 +3,6 @@ import geopandas as gpd
 
 def main():
     # 데이터 파일 경로 설정 #
-
     # 구 이름을 변수로 정의
     region_name = '북구'
 
@@ -37,39 +36,98 @@ def main():
 
     soil_file = "data/산림입지토양도/27.shp"                        # 산림입지토양도 파일 경로
     boundary_file = f'data/boundary/{region_name}_boundary.csv'  # 경계 파일 경로
-    
+
+
     # 필터링 #
-    # 1. 착륙 제한 지역 필터링
-    exclusion_data, boundary_gdf = filter.load_data(exclusion_files, forest_file, soil_file, boundary_file)
-    first_filtered_polygons, boundary_gdf, _, first_filtered_sites = filter.preprocess_data(exclusion_data, boundary_gdf)
+    # 1. 착륙 제한 지역 필터링 (1차 필터링)
+    # 데이터가 이미 저장되어 있다면, 로드
+    try:
+        first_filtered_polygons = filter.load_polygons_from_pickle(f'results/filtering/1차/{region_name}_first_filtered_polygons.pkl')
+        boundary_gdf = filter.load_boundary_data(boundary_file)
+    except FileNotFoundError:
+        # 저장된 파일이 없으면 필터링 진행
+        exclusion_data, boundary_gdf = filter.load_data(exclusion_files, forest_file, soil_file, boundary_file)
+        first_filtered_polygons= filter.first_filtering(exclusion_data, boundary_gdf)
+        
+        # 필터링된 데이터를 저장
+        filter.save_polygons_to_pickle(first_filtered_polygons, f'results/filtering/1차/{region_name}_first_filtered_polygons.pkl')
 
-    # 면적 계산
+    # 결과 분석 (면적 및 폴리곤 개수 계산)
     boundary_area = boundary_gdf.to_crs(epsg=3857).area.sum()  # 경계 면적 계산 (EPSG:3857 좌표계로 변환 후 면적 계산)
-    print(f"필터링 전 전체 영역 면적: {boundary_area:.2f} m^2")
-    first_filtered_area = gpd.GeoSeries([first_filtered_sites], crs='epsg:4326').to_crs(epsg=3857).area.sum()
-    print(f"1차 필터링 후 착륙 가능한 영역 면적: {first_filtered_area:.2f} m^2")
+    print(f"필터링 전 전체 영역 면적: {int(boundary_area)} m^2")
+    
+    first_filtered_area = gpd.GeoSeries(first_filtered_polygons, crs='epsg:4326').to_crs(epsg=3857).area.sum()
+    print(f"1차 필터링 후 착륙 가능한 영역 면적: {int(first_filtered_area)} m^2")
     print(f"1차 필터링 면적 비율: {first_filtered_area/boundary_area*100:.2f} %")
+    
+    num_polygons = len(first_filtered_polygons)
+    print(f"1차 필터링 폴리곤 개수: {num_polygons}")
+    print('----------------------------')
 
-    # 시각화
-    # fig1, fig2 = filter.visualize_results(boundary_gdf, gpd.GeoDataFrame({'geometry': first_filtered_polygons}), landing_able_sites, exclusions_in_boundary)
+    # 결과 분석 (시각화)
+    # 1차 필터링 결과 시각화
+    # fig = filter.visualize_filtered_polygons(boundary_gdf, first_filtered_polygons)
+
+    # 시각화 결과를 파일로 저장
+    # filter.save_visualization(fig, f'results/filtering/1차/{region_name}_first_filtered_result.png')
+
+
+    # 2. 면적 필터링 (2차 필터링)
+    try:
+        second_filtered_polygons = filter.load_polygons_from_pickle(f'results/filtering/2차/{region_name}_first_filtered_polygons.pkl')
+    except FileNotFoundError:
+        # 저장된 파일이 없으면 필터링 진행
+        RADIUS = 20     # m
+        second_filtered_polygons, _ = filter.second_filtering(first_filtered_polygons, RADIUS)
+        
+        # 필터링된 데이터를 저장
+        filter.save_polygons_to_pickle(second_filtered_polygons, f'results/filtering/2차/{region_name}_first_filtered_polygons.pkl')
+    
+    # 결과 분석 (면적 계산)
+    second_filtered_area = gpd.GeoSeries(second_filtered_polygons, crs='epsg:4326').to_crs(epsg=3857).area.sum()
+    print(f"2차 필터링 후 착륙 가능한 영역 면적: {int(second_filtered_area)} m^2")
+    print(f"2차 필터링/전체 면적 비율: {second_filtered_area/boundary_area*100:.2f} %")
+    print(f"2차 필터링/1차 필터링 면적 비율: {second_filtered_area/first_filtered_area*100:.2f} %")
+
+    num_polygons = len(second_filtered_polygons)
+    print(f"2차 필터링 폴리곤 개수: {num_polygons}")
+    print('----------------------------')
+
+    # 결과 분석 (시각화)
+    # 2차 필터링 결과 시각화
+    # fig2 = filter.visualize_filtered_polygons(boundary_gdf, second_filtered_polygons)
+
+    # 시각화 결과를 파일로 저장
+    # filter.save_visualization(fig2, f'results/filtering/2차/{region_name}_second_filtered_result.png')
+
+
+    # 3. 경사도 필터링 (3차 필터링)
+    elevation_points = gpd.read_file(f"data/수치지형도/{region_name}/N3P_F0020000.shp", encoding='euckr')
+    elevation_contours = gpd.read_file(f"data/수치지형도/{region_name}/N3L_F0010000.shp", encoding='euckr').explode()
+    
+    polygons_with_elevation = filter.add_elevation_to_polygons(second_filtered_polygons, elevation_points, elevation_contours)
+
+    # 안전 경사도 필터링
+    final_filtered_polygons = filter.extract_safe_slopes(polygons_with_elevation)
+
+    # 결과 분석 (면적 계산)
+    final_filtered_area = gpd.GeoSeries(final_filtered_polygons, crs='epsg:4326').to_crs(epsg=3857).area.sum()
+    print(f"3차 필터링 후 착륙 가능한 영역 면적: {int(final_filtered_area)} m^2")
+    print(f"3차 필터링/전체 면적 비율: {final_filtered_area/boundary_area*100:.2f} %")
+    print(f"3차 필터링/1차 필터링 면적 비율: {final_filtered_area/first_filtered_area*100:.2f} %")
+    print(f"3차 필터링/2차 필터링 면적 비율: {final_filtered_area/second_filtered_area*100:.2f} %")
+
+    num_polygons = len(final_filtered_polygons)
+    print(f"3차 필터링 폴리곤 개수: {num_polygons}")
+    print('----------------------------')
+
+    # 결과 분석 (시각화)
+    # # 3차 필터링 결과 시각화
+    # fig3 = filter.visualize_filtered_polygons(boundary_gdf, final_filtered_polygons)
+
+    # # 시각화 결과를 파일로 저장
+    # filter.save_visualization(fig3, f'results/filtering/3차/{region_name}_final_filtered_result.png')
 
 
 if __name__ == "__main__":
     main()
-
-
-    # # 2. 면적 필터링 (반지름 20m 원을 넣을 수 있는지 필터링)
-    # radius = 20  # 반지름 설정
-    # landing_candidates = filter.filter_landing_zones(polygons, radius)
-
-    # # 3. 경사도 필터링
-    # elevation_points = gpd.read_file("elevation_points.shp")
-    # elevation_contours = gpd.read_file("elevation_contours.shp")
-    
-    # polygons_with_elevation = filter.add_elevation_to_polygons(landing_candidates['Polygon'], elevation_points, elevation_contours)
-
-    # # 안전 경사도 필터링
-    # safe_polygons = filter.extract_safe_slopes(polygons_with_elevation)
-
-    # # 결과 시각화
-    # filter.visualize_safe_polygons(boundary_gdf, safe_polygons)
