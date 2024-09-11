@@ -1,5 +1,6 @@
 import filter
 import geopandas as gpd
+from geopy.geocoders import Nominatim
 
 def main():
     # 데이터 파일 경로 설정 #
@@ -128,6 +129,38 @@ def main():
     # # 시각화 결과를 파일로 저장
     # filter.save_visualization(fig3, f'results/filtering/3차/{region_name}_final_filtered_result.png')
 
+    # Geopy를 위한 지오코더 객체 생성
+    geolocator = Nominatim(user_agent="your_app_name")
+
+    # # 3차 필터링 후 폴리곤의 대표 지점을 역 지오코딩
+    # for polygon in final_filtered_polygons:
+    #     representative_point = polygon.representative_point()
+    #     location = geolocator.reverse((representative_point.y, representative_point.x), language='ko')
+    #     print(f"Representative Point: {representative_point}, Address: {location.address}")
+
+    #     address_components = location.raw.get('address', {})
+    #     print(address_components)
+
+    # 3차 필터링 후 폴리곤의 대표 지점을 역 지오코딩
+    for polygon in final_filtered_polygons:
+        representative_point = polygon.representative_point()
+        
+        # 역 지오코딩 수행
+        location = geolocator.reverse((representative_point.y, representative_point.x), language='ko')
+
+        if location and location.raw:
+            address_components = location.raw.get('address', {})
+            # amenity 정보가 있는지 확인
+            amenity = address_components.get('amenity', None)
+
+            # amenity가 있는 경우 우선적으로 출력
+            if amenity:
+                print(f"Representative Point: {representative_point}")
+                print(f"Amenity: {amenity}")
+            # else:
+            #     print(f"Representative Point: {representative_point}")
+            #     print(f"Address: {location.address}")
+            # print("-----------------------")
 
 if __name__ == "__main__":
     main()
