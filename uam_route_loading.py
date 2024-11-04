@@ -1,28 +1,108 @@
 import os
 import pandas as pd
 import geopandas as gpd
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, MultiLineString
 from shapely import wkt
 from geopy.distance import geodesic
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 import numpy as np
+import osmnx as ox
+import filter
+from tqdm import tqdm
 
-# UAM 노선의 주요 경로 좌표 정의 (실제 경로는 업데이트 가능)
+def extract_segment_coordinates(file_path, start_point, end_point):
+    """
+    특정 구간의 좌표를 추출하는 함수.
+    
+    Parameters:
+    - file_path: str, GeoJSON 파일 경로
+    - start_point: tuple, 시작점 좌표 (위도, 경도) 형식
+    - end_point: tuple, 종료점 좌표 (위도, 경도) 형식
+    
+    Returns:
+    - extracted_segment_coords: list of tuples, 시작점과 종료점 사이의 추출된 구간 좌표 (위도, 경도) 형식
+    """
+    # GeoJSON 파일 불러오기
+    gdf = gpd.read_file(file_path)
+    
+    # 모든 세그먼트 중 시작점과 종료점에 가장 가까운 세그먼트 선택
+    closest_segment = None
+    closest_start_index, closest_end_index = None, None
+    min_start_distance, min_end_distance = float('inf'), float('inf')
+    
+    # 첫 번째 geometry 가져오기
+    geom = gdf.geometry.iloc[0]
+    
+    if isinstance(geom, MultiLineString):
+        for segment in geom.geoms:
+            segment_coords = [(lat, lon) for lon, lat in segment.coords]
+            
+            # 시작점과 종료점에 가장 가까운 인덱스 찾기
+            start_index = min(range(len(segment_coords)), key=lambda i: geodesic(segment_coords[i], start_point).meters)
+            end_index = min(range(len(segment_coords)), key=lambda i: geodesic(segment_coords[i], end_point).meters)
+            
+            # 시작점과 종료점 거리 계산
+            start_distance = geodesic(segment_coords[start_index], start_point).meters
+            end_distance = geodesic(segment_coords[end_index], end_point).meters
+
+            # 가장 가까운 세그먼트를 업데이트
+            if start_distance < min_start_distance and end_distance < min_end_distance:
+                closest_segment = segment_coords
+                closest_start_index, closest_end_index = start_index, end_index
+                min_start_distance, min_end_distance = start_distance, end_distance
+                
+    elif isinstance(geom, Polygon):
+        segment_coords = [(lat, lon) for lon, lat in geom.exterior.coords]
+        
+        # 시작점과 종료점에 가장 가까운 인덱스 찾기
+        start_index = min(range(len(segment_coords)), key=lambda i: geodesic(segment_coords[i], start_point).meters)
+        end_index = min(range(len(segment_coords)), key=lambda i: geodesic(segment_coords[i], end_point).meters)
+        
+        # 인덱스와 거리 정보 업데이트
+        closest_segment = segment_coords
+        closest_start_index, closest_end_index = start_index, end_index
+
+    # 인덱스 순서 확인 후 범위 설정
+    if closest_start_index > closest_end_index:
+        closest_start_index, closest_end_index = closest_end_index, closest_start_index  # 인덱스 교환
+    
+    # 추출된 구간의 좌표
+    extracted_segment_coords = closest_segment[closest_start_index:closest_end_index + 1]
+    return extracted_segment_coords
+
+# GeoJSON 파일 불러오기
+river_file_path = 'data/geojson/kumho_river.geojson'    # 금호강
+highway_file_path = 'data/geojson/export.geojson'       # 중앙고속도로
+
+# # 시작점과 종료점
+# start_point = (35.87467, 128.61038)  # 신천철로 end point
+# end_point = (35.88881, 128.52540),  # 금호JC
+
+# # 추출된 구간의 좌표
+# river_coords = extract_segment_coordinates(river_file_path, start_point, end_point)
+
+# 시작점과 종료점
+start_point = (35.88881, 128.52540) # 금호JC
+end_point = (36.28081, 128.58175)   # 대구경북통합신공항 예정지 부근
+
+# 추출된 구간의 좌표
+highway_coords = extract_segment_coordinates(highway_file_path, start_point, end_point)
+
+# UAM 노선
 uam_route_points = [
     (35.8796, 128.6284),  # 동대구역 -> 
     (35.87467, 128.61038),  # 신천철로 end point
     (35.904685, 128.592246), # 금호강 end point
-    # (35.9133, 128.5730),  # 금호JC
     (35.88881, 128.52540),  # 금호JC
-    (36.28081, 128.58175),   # 중앙고속도로 end point
-    # (36.3026, 128.5237)   # 대구경북통합신공항 예정지
+    *highway_coords,  # 중앙고속도로 웨이포인트
     (36.30309, 128.50657)   # 대구경북통합신공항 예정지
 ]
 
 # 1km 간격으로 웨이포인트 생성 함수
 def generate_waypoints(route_points, interval_km=1):
-    waypoints = []
+    waypoints = [route_points[0]]  # 시작점을 추가
     for i in range(len(route_points) - 1):
         start = route_points[i]
         end = route_points[i + 1]
@@ -40,6 +120,8 @@ def generate_waypoints(route_points, interval_km=1):
             lon = start[1] + fraction * (end[1] - start[1])
             waypoints.append((lat, lon))
     
+    # 구간의 끝 지점을 추가
+    waypoints.append(end)
     return waypoints
 
 # 중심점(centroid)과 웨이포인트 사이의 거리를 계산하여 최소 거리를 반환하는 함수
@@ -48,25 +130,46 @@ def calculate_min_distance(centroid, waypoints):
     # 각 웨이포인트와의 거리 계산 후 최소 거리 반환
     return min(geodesic(centroid_coords, waypoint).km for waypoint in waypoints)
 
-# 모든 CSV 파일을 로드하고, 웨이포인트 기반으로 필터링하는 함수
+# Waypoints 사이의 거리가 1km 이상일 때만 유효한 웨이포인트로 선택
+def filter_waypoints(waypoints, interval_km=1):
+    filtered_waypoints = [waypoints[0]]  # 첫 번째 웨이포인트 추가
+    last_added = waypoints[0]
+
+    for waypoint in waypoints[1:]:
+        if geodesic(last_added, waypoint).km >= interval_km:
+            filtered_waypoints.append(waypoint)
+            last_added = waypoint
+
+    return filtered_waypoints
+
+# 모든 CSV 파일을 로드하고, 필터링된 웨이포인트 기반으로 거리 계산을 줄인 함수
 def process_all_csv_files(folder, csv_list, waypoints, buffer_distance=2.5):
+    # 웨이포인트 필터링: 1km 이상 떨어진 웨이포인트만 포함
+    filtered_waypoints = filter_waypoints(waypoints)
+    
     all_filtered_polygons = []
     
-    for file_name in csv_list:
+    # 전체 파일의 진행률 확인
+    for file_name in tqdm(csv_list, desc="Processing CSV Files"):
         file_path = os.path.join(folder, file_name)
         data = pd.read_csv(file_path)
-
-        # 각 폴리곤의 중심점과 웨이포인트 사이의 거리를 계산하고, 웨이포인트에서 buffer_distance 이내의 폴리곤만 필터링
-        data['Distance_to_UAM_route'] = data['Centroid'].apply(eval).apply(lambda centroid: calculate_min_distance(centroid, waypoints))
+        
+        # 각 폴리곤의 중심점과 필터링된 웨이포인트 사이의 거리를 계산하고, buffer_distance 이내의 폴리곤만 필터링
+        data['Distance_to_UAM_route'] = data['Centroid'].apply(eval).apply(lambda centroid: calculate_min_distance(centroid, filtered_waypoints))
+        
+        # 필터링된 데이터를 얻기 위한 진행률
         filtered_data = data[data['Distance_to_UAM_route'] <= buffer_distance]
         
-        # WKT 형식으로 저장된 폴리곤 데이터를 shapely Polygon 객체로 변환
-        filtered_polygons = [wkt.loads(row['Polygon']) for i, row in filtered_data.iterrows()]
+        # tqdm을 사용하여 각 행별 진행률을 표시
+        filtered_polygons = []
+        for _, row in tqdm(filtered_data.iterrows(), desc=f"Processing polygons in {file_name}", total=len(filtered_data)):
+            filtered_polygons.append(wkt.loads(row['Polygon']))
         
         # 모든 구의 필터링된 폴리곤을 저장
         all_filtered_polygons.extend(filtered_polygons)
 
     return all_filtered_polygons
+
 
 # 경계 데이터를 로드하는 함수 (CSV 파일에서 WKT 형식으로 로드)
 def load_all_boundary_data(boundary_folder):
@@ -87,52 +190,17 @@ def load_all_boundary_data(boundary_folder):
     # 모든 구의 경계 데이터를 결합
     return pd.concat(all_boundaries, ignore_index=True)
 
-# # 필터링 결과 시각화
-# def visualize_filtered_polygons(boundary_gdf, filtered_polygons, waypoints):
-#     """
-#     필터링된 폴리곤과 웨이포인트를 시각화
-#     :param boundary_gdf: 결합된 경계 데이터 (geopandas GeoDataFrame)
-#     :param filtered_polygons: 1차 필터링된 폴리곤 리스트 (shapely.geometry.Polygon 객체)
-#     :param waypoints: 생성된 웨이포인트 리스트
-#     :return: fig
-#     """
-#     # 시각화할 데이터가 있는지 확인
-#     if not filtered_polygons:
-#         print("No polygons to visualize.")
-#         return None
-
-#     # 시각화 준비    
-#     fig, ax = plt.subplots(1, 1, figsize=(12, 12))
-
-#     # 경계 데이터 시각화
-#     boundary_gdf.plot(ax=ax, color='white', edgecolor='black')
-
-#     # 필터링된 폴리곤 시각화
-#     for poly in filtered_polygons:
-#         gpd.GeoSeries([poly], crs='epsg:4326').plot(ax=ax, color='green', alpha=0.6)
-
-#     # 웨이포인트 시각화
-#     waypoint_x = [point[1] for point in waypoints]
-#     waypoint_y = [point[0] for point in waypoints]
-#     ax.scatter(waypoint_x, waypoint_y, color='orange', label='Waypoints (1km intervals)', s=50)
-
-#     # 수동으로 범례 생성
-#     legend_patches = [
-#         Patch(color='green', alpha=0.5, label='Landing Able Sites'),
-#         Patch(facecolor='white', edgecolor='green', alpha=0.5, label='No landing Area'),
-#         Patch(facecolor='orange', edgecolor='orange', label='Waypoints (1km intervals)')
-#     ]
-#     ax.legend(handles=legend_patches)
-
-#     # 축 및 제목 설정
-#     ax.set_xlabel('Longitude')
-#     ax.set_ylabel('Latitude')
-#     ax.set_title('Polygons with Waypoints')
-
-#     # 결과 시각화 표시
-#     plt.show()
-
-#     return fig
+# 팔공산 국립공원의 경계 데이터를 가져오는 함수
+def get_palgongsan_boundary():
+    # 'boundary'가 'national_park'인 팔공산 국립공원의 경계 데이터 가져오기
+    place_name = "Palgongsan National Park, South Korea"
+    tags = {"boundary": "national_park"}
+    palgongsan_boundary = ox.geometries_from_place(place_name, tags)
+    
+    # 경계 데이터에서 multipolygon 형태의 데이터만 필터링
+    palgongsan_boundary = palgongsan_boundary[palgongsan_boundary.geometry.type == 'Polygon']
+    
+    return palgongsan_boundary
 
 # 필터링 결과 시각화
 def visualize_filtered_polygons(boundary_gdf, filtered_polygons, waypoints, uam_route_points):
@@ -155,40 +223,72 @@ def visualize_filtered_polygons(boundary_gdf, filtered_polygons, waypoints, uam_
     # 경계 데이터 시각화
     boundary_gdf.plot(ax=ax, color='white', edgecolor='black')
 
+    # 팔공산 국립공원의 경계 데이터 가져오기
+    palgongsan_boundary = get_palgongsan_boundary()
+    
+    # 팔공산 국립공원 경계 시각화 (연한 녹색)
+    palgongsan_boundary.plot(ax=ax, color='lightgreen', edgecolor='green', alpha=0.5, linewidth=2, label='Palgongsan National Park')
+
     # 필터링된 폴리곤 시각화
     for poly in filtered_polygons:
-        gpd.GeoSeries([poly], crs='epsg:4326').plot(ax=ax, color='green', alpha=0.6)
+        gpd.GeoSeries([poly], crs='epsg:4326').plot(ax=ax, color='plum')
 
     # 웨이포인트 시각화 (오렌지색)
     waypoint_x = [point[1] for point in waypoints]
     waypoint_y = [point[0] for point in waypoints]
-    ax.scatter(waypoint_x, waypoint_y, color='orange', label='Waypoints (1km intervals)', s=50)
+    ax.scatter(waypoint_x, waypoint_y, color='orange', edgecolor='orange' , label='Waypoints', s=50)
 
-    # UAM 경로의 주요 지점 시각화 (파란색)
-    uam_x = [point[1] for point in uam_route_points]
-    uam_y = [point[0] for point in uam_route_points]
-    ax.scatter(uam_x, uam_y, color='blue', label='UAM Route Points', s=100, marker='X')
+    selected_uam_points = [uam_route_points[0], uam_route_points[3], uam_route_points[-1]]
+    uam_x = [point[1] for point in selected_uam_points]
+    uam_y = [point[0] for point in selected_uam_points]
+    ax.scatter(uam_x, uam_y, color='blue', label='UAM Route Points', s=100)
 
     # 범례 생성
     legend_patches = [
-        Patch(color='green', alpha=0.5, label='Landing Able Sites'),
-        Patch(facecolor='white', edgecolor='green', alpha=0.5, label='No landing Area'),
-        Patch(facecolor='orange', edgecolor='orange', label='Waypoints (1km intervals)'),
-        Patch(facecolor='blue', edgecolor='blue', label='UAM Route Points')
+        Patch(color='plum', label='Landing Able Sites'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='orange', markersize=10, label='Waypoints'),  # 원형 범례
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='blue', markersize=10, label='UAM Route Points')  # 원형 범례
     ]
     ax.legend(handles=legend_patches)
 
     # 축 및 제목 설정
     ax.set_xlabel('Longitude')
     ax.set_ylabel('Latitude')
-    ax.set_title('Polygons with Waypoints and UAM Route Points')
 
     # 결과 시각화 표시
     plt.show()
 
     return fig
 
-
+def save_polygons_to_csv(polygons, output_file):
+    # EPSG:4326 좌표계를 사용한 GeoSeries 생성
+    polygons_gs = gpd.GeoSeries(polygons, crs='epsg:4326')
+    
+    # EPSG:3857 좌표계로 변환하여 면적 계산
+    polygons_gs_3857 = polygons_gs.to_crs(epsg=3857)
+    
+    # 면적 계산
+    areas = polygons_gs_3857.area
+    
+    # 중심점(centroid) 계산
+    centroids = polygons_gs.representative_point()
+    
+    # 폴리곤을 WKT 형식으로 변환
+    polygons_wkt = [polygon.wkt for polygon in polygons]
+    
+    # 중심점 좌표를 (lon, lat) 형식으로 변환
+    centroids_coords = [(point.x, point.y) for point in centroids]
+    
+    # 데이터프레임으로 변환
+    df = pd.DataFrame({
+        'Polygon': polygons_wkt,
+        'Area (m^2)': areas,
+        'Centroid': centroids_coords
+    })
+    
+    # CSV 파일로 저장
+    df.to_csv(output_file, index=False, encoding='utf-8')
+    print(f"Polygons saved to {output_file}")
 
 # 경계 데이터 경로
 boundary_folder_path = 'data/boundary'
@@ -197,7 +297,14 @@ boundary_folder_path = 'data/boundary'
 boundary_gdf = load_all_boundary_data(boundary_folder_path)
 
 # 웨이포인트 생성 (1km 간격)
-waypoints = generate_waypoints(uam_route_points, interval_km=1)
+waypoints_part1 = generate_waypoints(uam_route_points[0:4], interval_km=1)
+waypoints_part2 = generate_waypoints([highway_coords[-1], uam_route_points[-1]], interval_km=1)
+
+# 두 부분을 결합하여 최종 waypoints 리스트 생성
+waypoints = waypoints_part1 + waypoints_part2
+
+# 중앙고속도로 추가
+waypoints.extend(highway_coords)
 
 # 모든 CSV 파일을 처리 (웨이포인트를 기준으로 필터링)
 folder_path = 'results/filtering/Database'
@@ -214,6 +321,11 @@ csv_files = [
 ]
 filtered_polygons = process_all_csv_files(folder_path, csv_files, waypoints, buffer_distance=5)  # 반경을 5km로 설정
 
+# CSV로 저장
+# save_polygons_to_csv(filtered_polygons, f'results/filtering/UAM/uam_route_filtered_polygons.csv')
+
 # 필터링된 폴리곤을 시각화
-# visualize_filtered_polygons(boundary_gdf, filtered_polygons, waypoints)
-visualize_filtered_polygons(boundary_gdf, filtered_polygons, waypoints, uam_route_points)
+fig = visualize_filtered_polygons(boundary_gdf, filtered_polygons, waypoints, uam_route_points)
+
+# 시각화 결과를 파일로 저장
+# filter.save_visualization(fig, f'results/filtering/UAM/uam_route_filtered_result.png')
