@@ -142,12 +142,42 @@ def filter_waypoints(waypoints, interval_km=1):
 
     return filtered_waypoints
 
+# # 모든 CSV 파일을 로드하고, 필터링된 웨이포인트 기반으로 거리 계산을 줄인 함수
+# def process_all_csv_files(folder, csv_list, waypoints, buffer_distance=2.5):
+#     # 웨이포인트 필터링: 1km 이상 떨어진 웨이포인트만 포함
+#     filtered_waypoints = filter_waypoints(waypoints)
+    
+#     all_filtered_polygons = []
+    
+#     # 전체 파일의 진행률 확인
+#     for file_name in tqdm(csv_list, desc="Processing CSV Files"):
+#         file_path = os.path.join(folder, file_name)
+#         data = pd.read_csv(file_path)
+        
+#         # 각 폴리곤의 중심점과 필터링된 웨이포인트 사이의 거리를 계산하고, buffer_distance 이내의 폴리곤만 필터링
+#         data['Distance_to_UAM_route'] = data['Centroid'].apply(eval).apply(lambda centroid: calculate_min_distance(centroid, filtered_waypoints))
+        
+#         # 필터링된 데이터를 얻기 위한 진행률
+#         filtered_data = data[data['Distance_to_UAM_route'] <= buffer_distance]
+        
+#         # tqdm을 사용하여 각 행별 진행률을 표시
+#         filtered_polygons = []
+#         for _, row in tqdm(filtered_data.iterrows(), desc=f"Processing polygons in {file_name}", total=len(filtered_data)):
+#             filtered_polygons.append(wkt.loads(row['Polygon']))
+        
+#         # 모든 구의 필터링된 폴리곤을 저장
+#         all_filtered_polygons.extend(filtered_polygons)
+
+#     return all_filtered_polygons
+
+
 # 모든 CSV 파일을 로드하고, 필터링된 웨이포인트 기반으로 거리 계산을 줄인 함수
 def process_all_csv_files(folder, csv_list, waypoints, buffer_distance=2.5):
     # 웨이포인트 필터링: 1km 이상 떨어진 웨이포인트만 포함
     filtered_waypoints = filter_waypoints(waypoints)
     
     all_filtered_polygons = []
+    all_filtered_polygons_center = []
     
     # 전체 파일의 진행률 확인
     for file_name in tqdm(csv_list, desc="Processing CSV Files"):
@@ -155,20 +185,44 @@ def process_all_csv_files(folder, csv_list, waypoints, buffer_distance=2.5):
         data = pd.read_csv(file_path)
         
         # 각 폴리곤의 중심점과 필터링된 웨이포인트 사이의 거리를 계산하고, buffer_distance 이내의 폴리곤만 필터링
-        data['Distance_to_UAM_route'] = data['Centroid'].apply(eval).apply(lambda centroid: calculate_min_distance(centroid, filtered_waypoints))
-        
+        data['Distance_to_UAM_route'] = data['Centroid'].apply(eval).apply(
+            lambda centroid: calculate_min_distance(centroid, filtered_waypoints)
+        )
         # 필터링된 데이터를 얻기 위한 진행률
         filtered_data = data[data['Distance_to_UAM_route'] <= buffer_distance]
-        
-        # tqdm을 사용하여 각 행별 진행률을 표시
-        filtered_polygons = []
-        for _, row in tqdm(filtered_data.iterrows(), desc=f"Processing polygons in {file_name}", total=len(filtered_data)):
-            filtered_polygons.append(wkt.loads(row['Polygon']))
-        
-        # 모든 구의 필터링된 폴리곤을 저장
-        all_filtered_polygons.extend(filtered_polygons)
 
-    return all_filtered_polygons
+        # tqdm을 사용하여 각 행별로 폴리곤과 중심점 처리
+        for _, row in tqdm(filtered_data.iterrows(), desc=f"Processing polygons in {file_name}", total=len(filtered_data)):
+            polygon = wkt.loads(row['Polygon'])
+            center_point = eval(row['Safe Center Point'])  # Safe Center Point 가져오기
+            all_filtered_polygons.append(polygon)
+            all_filtered_polygons_center.append(center_point)
+
+    # 분리된 두 리스트 반환
+    return all_filtered_polygons, all_filtered_polygons_center
+
+
+# def process_all_csv_files(folder, csv_list, waypoints, buffer_distance=2.5):
+#     filtered_polygons_with_center = []
+    
+#     for file_name in tqdm(csv_list, desc="Processing CSV Files"):
+#         file_path = os.path.join(folder, file_name)
+#         data = pd.read_csv(file_path)
+        
+#         # 거리 계산 및 필터링
+#         data['Distance_to_UAM_route'] = data['Centroid'].apply(eval).apply(
+#             lambda centroid: calculate_min_distance(centroid, waypoints)
+#         )
+#         filtered_data = data[data['Distance_to_UAM_route'] <= buffer_distance]
+
+#         for _, row in filtered_data.iterrows():
+#             polygon = wkt.loads(row['Polygon'])  # Polygon 객체로 변환
+#             safe_center_point = eval(row['Safe Center Point'])  # Safe Center Point 가져오기
+#             filtered_polygons_with_center.append((polygon, safe_center_point))  # 튜플로 저장
+
+#     return filtered_polygons_with_center
+
+
 
 
 # 경계 데이터를 로드하는 함수 (CSV 파일에서 WKT 형식으로 로드)
@@ -260,7 +314,46 @@ def visualize_filtered_polygons(boundary_gdf, filtered_polygons, waypoints, uam_
 
     return fig
 
-def save_polygons_to_csv(polygons, output_file):
+# def save_polygons_to_csv(polygons, output_file):
+#     # EPSG:4326 좌표계를 사용한 GeoSeries 생성
+#     polygons_gs = gpd.GeoSeries(polygons, crs='epsg:4326')
+    
+#     # EPSG:3857 좌표계로 변환하여 면적 계산
+#     polygons_gs_3857 = polygons_gs.to_crs(epsg=3857)
+    
+#     # 면적 계산
+#     areas = polygons_gs_3857.area
+    
+#     # 중심점(centroid) 계산
+#     centroids = polygons_gs.representative_point()
+    
+#     # 폴리곤을 WKT 형식으로 변환
+#     polygons_wkt = [polygon.wkt for polygon in polygons]
+    
+#     # 중심점 좌표를 (lon, lat) 형식으로 변환
+#     centroids_coords = [(point.x, point.y) for point in centroids]
+    
+#     # 'Safe Center Point' 가져오기
+#     # safe_center_points = polygons['Safe Center Point'].tolist()  # 'Safe Center Point' 컬럼
+#     safe_center_points = [poly['Safe Center Point'] for poly in polygons]
+
+#     # 데이터프레임으로 변환
+#     df = pd.DataFrame({
+#         'Polygon': polygons_wkt,
+#         'Area (m^2)': areas,
+#         'Centroid': centroids_coords,
+#         'Safe Center Point': safe_center_points
+#     })
+    
+#     # CSV 파일로 저장
+#     df.to_csv(output_file, index=False, encoding='utf-8')
+#     print(f"Polygons saved to {output_file}")
+
+def save_polygons_to_csv(polygons_with_center, output_file):
+    # 폴리곤과 중심점 분리
+    polygons = [item[0] for item in polygons_with_center]
+    safe_center_points = [item[1] for item in polygons_with_center]
+    
     # EPSG:4326 좌표계를 사용한 GeoSeries 생성
     polygons_gs = gpd.GeoSeries(polygons, crs='epsg:4326')
     
@@ -283,7 +376,8 @@ def save_polygons_to_csv(polygons, output_file):
     df = pd.DataFrame({
         'Polygon': polygons_wkt,
         'Area (m^2)': areas,
-        'Centroid': centroids_coords
+        'Centroid': centroids_coords,
+        'Safe Center Point': safe_center_points  # Safe Center Point 추가
     })
     
     # CSV 파일로 저장
@@ -309,23 +403,29 @@ waypoints.extend(highway_coords)
 # 모든 CSV 파일을 처리 (웨이포인트를 기준으로 필터링)
 folder_path = 'results/filtering/Database'
 csv_files = [
-    '달성군_final_filtered_polygons.csv',
-    '달서구_final_filtered_polygons.csv',
-    '군위군_final_filtered_polygons.csv',
-    '중구_final_filtered_polygons.csv',
-    '수성_final_filtered_polygons.csv',
-    '서구_final_filtered_polygons.csv',
-    '동구_final_filtered_polygons.csv',
-    '북구_final_filtered_polygons.csv',
-    '남구_final_filtered_polygons.csv'
+    '달성군_final_filtered_polygons_with_center.csv',
+    '달서구_final_filtered_polygons_with_center.csv',
+    '군위군_final_filtered_polygons_with_center.csv',
+    '중구_final_filtered_polygons_with_center.csv',
+    '수성_final_filtered_polygons_with_center.csv',
+    '서구_final_filtered_polygons_with_center.csv',
+    '동구_final_filtered_polygons_with_center.csv',
+    '북구_final_filtered_polygons_with_center.csv',
+    '남구_final_filtered_polygons_with_center.csv'
+    # '칠곡_final_filtered_polygons.csv',
+    # '구미_final_filtered_polygons.csv'
 ]
-filtered_polygons = process_all_csv_files(folder_path, csv_files, waypoints, buffer_distance=5)  # 반경을 5km로 설정
-
+# filtered_polygons  = process_all_csv_files(folder_path, csv_files, waypoints, buffer_distance=4)  # 반경을 4km로 설정
+filtered_polygons, filtered_centers  = process_all_csv_files(folder_path, csv_files, waypoints, buffer_distance=4)  # 반경을 4km로 설정
+# print('filtered_polygons: ')
+# print(filtered_polygons.column)
 # CSV로 저장
 # save_polygons_to_csv(filtered_polygons, f'results/filtering/UAM/uam_route_filtered_polygons.csv')
+# save_polygons_to_csv(filtered_polygons, f'results/filtering/UAM/uam_route_filtered_polygons_4km_with_center.csv')
+# save_polygons_to_csv(list(zip(filtered_polygons, filtered_centers)), "results/filtering/UAM/uam_route_filtered_polygons_4km_with_center.csv")
 
 # 필터링된 폴리곤을 시각화
 fig = visualize_filtered_polygons(boundary_gdf, filtered_polygons, waypoints, uam_route_points)
 
 # 시각화 결과를 파일로 저장
-# filter.save_visualization(fig, f'results/filtering/UAM/uam_route_filtered_result.png')
+# filter.save_visualization(fig, f'results/filtering/UAM/uam_route_filtered_result_4km_daegu.png')
