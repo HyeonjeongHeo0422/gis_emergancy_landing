@@ -20,51 +20,19 @@ if 'Waypoint_Index' not in results_df.columns:
 # Convert area from m² to km²
 results_df['Optimal_Cluster_Area_km2'] = results_df['Optimal_Cluster_Area'] / 1_000_000
 
-# # 시각화: 클러스터 개수, 대표 클러스터 면적, 대표 클러스터와의 거리
-# plt.figure(figsize=(12, 6))
+# Calculate and print statistics
+cluster_count_stats = results_df['Cluster_Count'].agg(['mean', 'min', 'max'])
+optimal_area_stats = results_df['Optimal_Cluster_Area_km2'].agg(['mean', 'min', 'max'])
+distance_stats = results_df['Distance_to_UAM'].agg(['mean', 'min', 'max'])
 
-# # Plot Cluster Count
-# plt.plot(
-#     results_df['Waypoint_Index'],
-#     results_df['Cluster_Count'],
-#     linestyle='-', 
-#     linewidth=2, 
-#     color='orange', 
-#     label='Cluster Count'
-# )
+print("\nCluster Count Statistics")
+print(cluster_count_stats)
 
-# # Plot Optimal Cluster Area (km²)
-# plt.plot(
-#     results_df['Waypoint_Index'],
-#     results_df['Optimal_Cluster_Area_km2'], 
-#     linestyle='-', 
-#     linewidth=2, 
-#     color='blue', 
-#     label='Max Area (km²)'
-# )
+print("\nSelected Cluster Area Statistics (km²)")
+print(optimal_area_stats)
 
-# # Plot Min Distance to UAM
-# plt.plot(
-#     results_df['Waypoint_Index'],
-#     results_df['Distance_to_UAM'], 
-#     linestyle='-', 
-#     linewidth=2, 
-#     color='green', 
-#     label='Min Distance (km)'
-# )
-
-# # Add labels, title, and legend
-# plt.xlabel('Waypoint Index', fontsize=20)
-# plt.ylabel('Values', fontsize=20)
-# # plt.title('Cluster Analysis by Waypoint Index', fontsize=20)
-# plt.xticks(ticks=np.linspace(0, len(results_df.index)-1, num=10, dtype=int), fontsize=20)
-# plt.yticks(fontsize=20)
-# plt.xlim(left=0)  # x축 시작을 0으로 설정
-# plt.grid(alpha=0.5)
-# plt.legend(fontsize=20)
-# plt.tight_layout()
-
-# plt.show()
+print("\nMin Distance to UAM Statistics (km)")
+print(distance_stats)
 
 # 시각화: 클러스터 개수, 대표 클러스터 면적, 대표 클러스터와의 거리
 fig, ax1 = plt.subplots(figsize=(12, 6))
@@ -85,42 +53,14 @@ ax1.plot(
     linestyle='-',
     linewidth=2,
     color='blue',
-    label='Max Area (km²)'
+    label='Selected Cluster Area (km²)'
 )
 
 ax1.set_xlabel('Waypoint Index', fontsize=20)
-ax1.set_ylabel('Cluster Count / Max Area (km²)', fontsize=20)
+ax1.set_ylabel('Cluster Count / Selected Cluster Area (km²)', fontsize=20)
 ax1.tick_params(axis='y', labelsize=20)
 ax1.tick_params(axis='x', labelsize=20)
 ax1.grid(alpha=0.5)
-
-# # Right y-axis (Min Distance to UAM)
-# ax2 = ax1.twinx()
-# ax2.plot(
-#     results_df['Waypoint_Index'],
-#     results_df['Distance_to_UAM'],
-#     linestyle='-',
-#     linewidth=2,
-#     color='green',
-#     label='Min Distance (km)'
-# )
-# ax2.set_ylabel('Min Distance (km)', fontsize=20)
-# ax2.tick_params(axis='y', labelsize=20)
-# # ax2.set_ylim(end=4.0)  # y축 범위를 0에서 2.0으로 설정
-# start_ylim, _ = ax1.get_ylim()  # 현재 y축 시작값 가져오기
-# ax2.set_ylim(start_ylim, 4.0)   # 시작값 유지, 끝값만 4.0으로 설정
-
-
-# # Add legends
-# lines_1, labels_1 = ax1.get_legend_handles_labels()
-# lines_2, labels_2 = ax2.get_legend_handles_labels()
-# ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper right', fontsize=20)
-
-# # Final adjustments
-# plt.xlim(0, len(results_df) - 1)  # x축 범위를 0에서 데이터 개수로 설정
-# plt.tight_layout()
-# plt.show()
-
 
 # Right y-axis (Min Distance to UAM)
 ax2 = ax1.twinx()
