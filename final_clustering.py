@@ -13,6 +13,7 @@ from collections import defaultdict
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import silhouette_score
 from haversine import haversine
+from params import *
 
 # 1. 데이터 로드 및 전처리
 def load_and_preprocess_data(file_path):
@@ -33,7 +34,6 @@ def load_and_preprocess_data(file_path):
     data['safe_center'] = data['Safe Center Point'].apply(lambda x: Point(eval(x)) if pd.notnull(x) else None)
 
     return data
-
 
 def safe_load_wkt(wkt_str):
     """
@@ -68,7 +68,7 @@ def random_point_in_polygon(polygon):
         if polygon.contains(random_point):
             return random_point
 
-def generate_sector(center, radius, angle, heading):
+def generate_sector(center, radius, angle, uam_heading):
     """
     중심점에서 주어진 반경과 각도로 섹터(부채꼴 형태)를 생성하는 함수.
     
@@ -76,7 +76,7 @@ def generate_sector(center, radius, angle, heading):
     - center (Point): 섹터의 중심점.
     - radius (float): 섹터의 반경 (도 단위).
     - angle (float): 섹터의 각도 (도 단위).
-    - heading (float): 섹터의 중심 방향 (도 단위, 북쪽을 0도로 간주).
+    - uam_heading (float): 섹터의 중심 방향 (도 단위, 북쪽을 0도로 간주).
     
     Returns:
     - list[Point]: 섹터를 구성하는 포인트들의 리스트.
@@ -84,14 +84,14 @@ def generate_sector(center, radius, angle, heading):
     points = [center]
     num_points = 100  # 부드러운 곡선을 위해 포인트 수 설정
     for i in range(num_points + 1):
-        angle_rad = np.radians(heading - angle / 2 + i * angle / num_points)
+        angle_rad = np.radians(uam_heading - angle / 2 + i * angle / num_points)
         x = center.x + radius * np.cos(angle_rad)
         y = center.y + radius * np.sin(angle_rad)
         points.append(Point(x, y))
     points.append(center)  # 부채꼴을 닫기 위해 중심점 추가
     return points
 
-def is_within_sector(point, center, radius, angle, heading):
+def is_within_sector(point, center, radius, angle, uam_heading):
     """
     주어진 포인트가 섹터 내부에 있는지 여부를 확인하는 함수.
 
@@ -100,7 +100,7 @@ def is_within_sector(point, center, radius, angle, heading):
     - center (Point): 섹터의 중심점.
     - radius (float): 섹터의 반경 (도 단위).
     - angle (float): 섹터의 각도 (도 단위).
-    - heading (float): 섹터의 중심 방향 (도 단위).
+    - uam_heading (float): 섹터의 중심 방향 (도 단위).
 
     Returns:
     - bool: 포인트가 섹터 내에 있으면 True, 아니면 False.
@@ -113,20 +113,18 @@ def is_within_sector(point, center, radius, angle, heading):
     dy = point.y - center.y
     point_angle = (math.degrees(math.atan2(dy, dx))) % 360
 
-    return heading-angle / 2 <= point_angle <= heading+angle / 2
+    return uam_heading-angle / 2 <= point_angle <= uam_heading+angle / 2
 
 ############################################################
 # 3. 클러스터링
-def perform_dbscan_clustering(filtered_data, eps=0.001, min_samples=3):
-# def perform_dbscan_clustering(filtered_data, eps=0.027, min_samples=3):
-# def perform_dbscan_clustering(filtered_data, eps=0.007, min_samples=3):
+def perform_dbscan_clustering(filtered_data):
     """
     DBSCAN을 이용해 필터링된 폴리곤들의 꼭짓점을 클러스터링하는 함수.
     
     Parameters:
     - filtered_data (pd.DataFrame): 필터링된 폴리곤 데이터프레임.
-    - eps (float): DBSCAN의 입실론 값 (기본값은 0.001).
-    - min_samples (int): 각 클러스터의 최소 샘플 수 (기본값은 3).
+    - eps (float): DBSCAN의 입실론 값. 
+    - min_samples (int): 각 클러스터의 최소 샘플 수.
     
     Returns:
     - clusters (np.ndarray): 각 꼭짓점의 클러스터 레이블 배열.
@@ -149,7 +147,6 @@ def perform_dbscan_clustering(filtered_data, eps=0.001, min_samples=3):
 
     # 데이터 형태 확인 및 변환
     if vertices_array.ndim == 1 or vertices_array.shape[1] != 2:
-        # print("Reshaping vertices_array to 2D format.")
         print_color("Reshaping vertices_array to 2D format.", color="yellow")
         vertices_array = vertices_array.reshape(-1, 2)
 
@@ -189,7 +186,7 @@ def find_polygons_in_multiple_clusters(filtered_data, clusters, vertices_array):
 
 def select_optimal_cluster(cluster_weights):
     """
-    최적의 클러스터를 선택하는 함수. 가장 높은 가중치를 가진 클러스터를 선택합니다.
+    최적의 클러스터를 선택하는 함수. 가장 높은 가중치를 가진 클러스터를 선택하는 함수.
     
     Parameters:
     - cluster_weights (dict): 클러스터 ID와 가중치 값을 포함한 딕셔너리.
@@ -258,9 +255,6 @@ def merge_clusters(filtered_data, clusters, vertices_array):
             valid_cluster_labels = [label for label in cluster_labels if label != -1]
 
             # 가장 많이 등장한 클러스터 ID를 기준 클러스터로 설정
-            # if cluster_labels:
-
-            # 가장 많이 등장한 클러스터 ID를 기준 클러스터로 설정
             if valid_cluster_labels:
                 dominant_cluster = max(set(cluster_labels), key=cluster_labels.count)
 
@@ -275,10 +269,10 @@ def merge_clusters(filtered_data, clusters, vertices_array):
 
     return clusters
 
-
 ############################################################
-# 가중치 계산
-def assign_cluster_properties_new(filtered_data, clusters, vertices_array, uam_location):
+# 가중치 계산 #
+
+def assign_cluster_properties(filtered_data, clusters, vertices_array, uam_location):
     """
     각 클러스터별로 폴리곤 면적의 합, UAM 위치와의 최소 거리, 폴리곤 개수를 저장하는 함수.
     
@@ -318,9 +312,6 @@ def assign_cluster_properties_new(filtered_data, clusters, vertices_array, uam_l
                     
                     # 클러스터별 면적 합계 갱신
                     cluster_areas[cluster_id] += area
-                    
-                    # # 현재 폴리곤의 중심점과 UAM 위치 간의 거리 계산
-                    # distance_to_uam = centroid.distance(Point(uam_location))
 
                     # 현재 폴리곤의 중심점 좌표를 위도, 경도로 변환
                     safe_center_coords = (safe_center.y, safe_center.x)  # Point(y, x) -> (lat, lon)
@@ -337,8 +328,7 @@ def assign_cluster_properties_new(filtered_data, clusters, vertices_array, uam_l
 
     return cluster_areas, cluster_distances, cluster_counts
 
-
-def calculate_cluster_weights_new(cluster_areas, cluster_distances, cluster_counts):
+def calculate_cluster_weights(cluster_areas, cluster_distances, cluster_counts):
     """
     클러스터별 가중치를 계산하는 함수.
     
@@ -373,147 +363,20 @@ def calculate_cluster_weights_new(cluster_areas, cluster_distances, cluster_coun
         normalized_distance = normalized_all_distances[list(cluster_distances.keys()).index(cluster_id)]
         normalized_count = normalized_all_counts[list(cluster_counts.keys()).index(cluster_id)]
 
-        # 거리 0.4, 면적 0.3, 폴리곤 개수 0.3의 비율로 가중치 합산
+        # Cluster Weight Score
         weighted_score = (
-            0.4 * (1 - normalized_distance) +  # 거리는 작을수록 좋으므로 1에서 뺌
-            0.3 * normalized_area +
-            0.3 * normalized_count
+            WEIGHT_DISTANCE * (1 - normalized_distance) +  # 거리는 작을수록 좋으므로 1에서 뺌
+            WEIGHT_AREA * normalized_area +
+            WEIGHT_CLUSTER_NUMBER * normalized_count
         )
 
-        # # 거리 0.3, 면적 0.7
-        # weighted_score = (
-        #     0.3 * (1 - normalized_distance) +  # 거리는 작을수록 좋으므로 1에서 뺌
-        #     0.7 * normalized_area +
-        #     0 * normalized_count
-        # )
-
-        # # 거리 0.7, 면적 0.3
-        # weighted_score = (
-        #     0.7 * (1 - normalized_distance) +  # 거리는 작을수록 좋으므로 1에서 뺌
-        #     0.3 * normalized_area +
-        #     0 * normalized_count
-        # )
-
-        # print(f'Cluster {cluster_id} weighted_score: ', weighted_score)
         cluster_weights[cluster_id] = weighted_score
 
     return cluster_weights
 
-
-
 ############################################################
 # 시각화
-def visualize_polygons_and_sector(filtered_data, sector_points, uam_location):
-    """
-    필터링된 폴리곤과 섹터를 시각화하는 함수.
-    
-    Parameters:
-    - filtered_data (pd.DataFrame): 필터링된 폴리곤 데이터프레임.
-    - sector_points (list[Point]): 섹터를 구성하는 포인트 리스트.
-    - uam_location (Point): UAM의 랜덤 위치.
-    """
-    # 시각화 시작
-    fig, ax = plt.subplots(1, 1, figsize=(12, 12))
-
-    # 섹터 시각화
-    sector_x = [p.x for p in sector_points]
-    sector_y = [p.y for p in sector_points]
-    # plt.fill(sector_x, sector_y, alpha=0.3, color='blue', label='80° Sector')
-    # plt.fill(sector_x, sector_y, alpha=0.5, color='gray', label='80° Sector')
-    plt.plot(sector_x + [sector_x[0]], sector_y + [sector_y[0]], color='black', linewidth=2, label='Sector Boundary')
-
-    # 필터링된 폴리곤을 GeoSeries를 사용하여 시각화 (유사한 방식으로 처리)
-    for geom in filtered_data['geometry']:
-        if geom is not None:
-            # gpd.GeoSeries([geom], crs='epsg:4326').plot(ax=ax, color='green', alpha=0.6)
-            gpd.GeoSeries([geom], crs='epsg:4326').plot(ax=ax, color='plum')
-
-    # # 대표점 표시
-    # for centroid in filtered_data['centroid'].dropna():
-    #     ax.scatter(centroid.x, centroid.y, color='blue', s=50, label='Centroid')
-
-    # UAM 위치를 검은색으로 표시
-    ax.scatter(uam_location.x, uam_location.y, color='red', marker='*', s=150, label='UAM Location')
-
-    # 범례 설정
-    legend_patches = [
-        # Patch(color='blue', alpha=0.3, label='180° Sector'),
-        # Patch(color='gray', alpha=0.5, label='180° Sector'),
-        # Patch(facecolor='green', alpha=0.6, label='Landing Able Sites'),
-        # Patch(facecolor='plum', label='Landing Able Sites')
-    ]
-    ax.legend(handles=legend_patches)
-
-    # 축 및 제목 설정
-    ax.set_xlabel('Longitude')
-    ax.set_ylabel('Latitude')
-    ax.set_title('Filtered Polygons and Sector with UAM Location and Centroids')
-
-    # 결과 시각화 표시
-    plt.show()
-
-    return fig
-
-def visualize_clusters(filtered_data, sector_points, uam_location, clusters, vertices_array):
-    """
-    필터링된 폴리곤, 섹터, 그리고 클러스터링 결과를 시각화하는 함수.
-    
-    Parameters:
-    - filtered_data (pd.DataFrame): 필터링된 폴리곤 데이터프레임.
-    - sector_points (list[Point]): 섹터를 구성하는 포인트 리스트.
-    - uam_location (Point): UAM의 랜덤 위치.
-    - clusters (np.ndarray): DBSCAN 클러스터 레이블 배열.
-    - vertices_array (np.ndarray): 각 꼭짓점의 좌표 배열.
-    """
-    # 시각화 시작
-    fig, ax = plt.subplots(1, 1, figsize=(12, 12))
-
-    # 섹터 시각화
-    sector_x = [p.x for p in sector_points]
-    sector_y = [p.y for p in sector_points]
-    ax.plot(sector_x, sector_y, color='black', linewidth=2, label='Sector')
-
-    # 클러스터별 색상을 생성
-    unique_labels = set(clusters)
-    colors = plt.cm.Spectral(np.linspace(0, 1, len(unique_labels)))
-    label_to_color = {label: color for label, color in zip(unique_labels, colors)}
-
-    # 각 폴리곤에 대해 클러스터 색상 할당
-    for geom in filtered_data['geometry']:
-        if geom is not None:
-            # 폴리곤의 첫 번째 꼭짓점을 기준으로 클러스터 레이블을 가져옴
-            coords = np.array(geom.exterior.coords)
-            cluster_indices = [
-                clusters[i] for i, vertex in enumerate(vertices_array) if tuple(vertex) in coords
-            ]
-            # 가장 많이 등장한 클러스터 레이블을 폴리곤의 클러스터로 간주
-            cluster_label = max(set(cluster_indices), key=cluster_indices.count) if cluster_indices else -1
-            edge_color = 'k' if cluster_label == -1 else label_to_color[cluster_label]
-            
-            # 경계선만 표시
-            gpd.GeoSeries([geom], crs='epsg:4326').plot(ax=ax, edgecolor=edge_color, facecolor='plum', linewidth=2)
-
-    # 범례에 각 클러스터 색상 및 레이블 추가
-    legend_handles = []
-    for label, color in label_to_color.items():
-        legend_label = f"Cluster {label}" if label != -1 else "Noise"
-        legend_handles.append(Patch(edgecolor=color, facecolor='none', linewidth=2, label=legend_label))
-
-    # UAM 위치를 빨간색 별표로 표시
-    ax.scatter(uam_location.x, uam_location.y, color='red', marker='*', s=150, label='UAM Location')
-
-    # 범례 설정
-    ax.legend(handles=legend_handles, bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
-    ax.set_xlabel('Longitude')
-    ax.set_ylabel('Latitude')
-    # ax.set_title('Filtered Polygons, Sector, and Clustering Results with UAM Location')
-
-    # 결과 시각화 표시
-    plt.show()
-
-    return fig
-
-def visualize_clusters_new(filtered_data, sector_points, uam_location, clusters, vertices_array, optimal_cluster_id=None):
+def visualize_clusters(filtered_data, sector_points, uam_location, clusters, vertices_array, optimal_cluster_id=None):
     """
     필터링된 폴리곤, 섹터, 최적 클러스터 중심에 하나의 큰 파란색 원을 추가한 클러스터링 결과 시각화 함수.
     
@@ -565,10 +428,10 @@ def visualize_clusters_new(filtered_data, sector_points, uam_location, clusters,
         avg_y = np.mean([coord[1] for coord in optimal_cluster_centroids])
         
         # 반지름은 총 면적에 비례하여 설정 (임의의 스케일링 적용)
-        radius = np.sqrt(total_area) * 0.000010  # 스케일링 팩터 0.0001 조정 가능
-        circle = Circle((avg_x, avg_y), radius=radius, color='blue', fill=False, linewidth=2)
-        circle = Circle((avg_x, avg_y), radius=0.005, color='blue', fill=False, linewidth=2)
-        ax.add_patch(circle)
+        # radius = np.sqrt(total_area) * 0.000010  # 스케일링 팩터 0.0001 조정 가능
+        # circle = Circle((avg_x, avg_y), radius=radius, color='blue', fill=False, linewidth=2)
+        # circle = Circle((avg_x, avg_y), radius=0.005, color='blue', fill=False, linewidth=2)
+        # ax.add_patch(circle)
 
     # UAM 위치를 빨간색 별표로 표시
     uam_location_marker = ax.scatter(uam_location.x, uam_location.y, color='red', marker='*', s=150, label='UAM Location')
@@ -585,29 +448,6 @@ def visualize_clusters_new(filtered_data, sector_points, uam_location, clusters,
     return fig
 
 ############################################################
-# 결과 분석 #
-def calculate_silhouette_score(vertices_array, clusters):
-    """
-    클러스터링 결과에 대한 실루엣 계수를 계산합니다.
-
-    Parameters:
-    - vertices_array (np.ndarray): 클러스터링 대상 점의 좌표 배열.
-    - clusters (np.ndarray): 클러스터 레이블 배열.
-
-    Returns:
-    - float: 계산된 실루엣 계수.
-    """
-    # 클러스터가 하나뿐이거나 모두 노이즈인 경우 실루엣 계수를 계산할 수 없음
-    unique_labels = set(clusters)
-    if len(unique_labels) <= 1 or -1 in unique_labels and len(unique_labels) == 2:
-        print("Silhouette score cannot be computed with one cluster or all noise.")
-        return None
-
-    # 실루엣 계수 계산
-    score = silhouette_score(vertices_array, clusters)
-    print(f"Silhouette Score: {score}")
-    return score
-
 def print_color(text, color="white"):
     """
     터미널에 컬러 텍스트를 출력하는 함수.
@@ -633,110 +473,52 @@ def print_color(text, color="white"):
 
 ############################################################
 ## main ##
-def clustering():
+def clustering(file_path, uam_heading):
     """
     클러스터링 작업의 첫 번째 단계: 데이터 로드 및 전처리.
     """
     # 1. 데이터 로드 및 전처리
-    # file_path = 'results/filtering/Database/북구_final_filtered_polygons.csv'
-    # file_path = 'results/filtering/UAM/uam_route_filtered_polygons_new.csv'
-    region_names = ['중구', '동구', '서구', '남구', '북구', '수성', '달서구', '달성군', '군위군']
-    for region_name in region_names:
-        print('region_name: ', region_name)
-        if region_name != '서구':
-            continue
-        file_path = f'results/filtering/Database/{region_name}_final_filtered_polygons_with_center.csv'
-        processed_data = load_and_preprocess_data(file_path)
+    processed_data = load_and_preprocess_data(file_path)
+    if processed_data.empty:
+        print("Processed data is empty. Check your input file.")
 
-        # 2. 랜덤한 폴리곤 내에서 랜덤한 포인트 생성
-        random_polygon = processed_data['geometry'].sample(1).values[0]
-        # uam_location = random_point_in_polygon(random_polygon)  # 랜덤 포인트 생성
-        # uam_location = Point(128.55290600005532, 35.92697302047616)
-        # uam_location = Point(128.62726878509338, 35.892079965735206)
-        # uam_location = Point(128.60251005566434, 35.92370815391617)   # cluster 8개
-        # uam_location = Point(128.58451197356626, 35.89525325781292)     # 가중치에 후보지 개수를 추가해야 하는 사례
-        # uam_location = Point(128.6143979724907, 35.86794278870446)      # cluster merge case
-        # uam_location = Point(128.60842396784372, 35.90710603800661)     # 가중치에 후보지 개수를 추가해야 하는 사례
-        uam_location = Point(128.54619449648965, 35.857268760259764)     # 가중치에 후보지 개수를 추가해야 하는 사례
-        print('uam_location: ', uam_location)
+    # 2. 랜덤한 폴리곤 내에서 랜덤한 포인트 생성
+    random_polygon = processed_data['geometry'].sample(1).values[0]
+    uam_location = random_point_in_polygon(random_polygon)  # 랜덤 포인트 생성
+    print('uam_location: ', uam_location)
 
-        # 3. 섹터 생성
-        radius_km = 1.8     # 반경 (km)
-        radius_deg = radius_km / 111  # 도 단위로 변환
-        # sector_angle = 80   # 섹터 각도
-        sector_angle = 180   # 섹터 각도
-        # heading = 180       # 헤딩 방향
-        heading = random.uniform(0, 360)  # 0에서 360 사이의 임의의 실수 값
-        # heading = 76.04409080340713
-        # heading = 54.16419300281425
-        # heading = 233.6750985819944   # cluster 8개
-        # heading = 335.43917278116606    # 가중치에 후보지 개수를 추가해야 하는 사례
-        # heading = 114.96071263712767    # cluster merge case
-        # heading = 252.95229959423364        # 가중치에 후보지 개수를 추가해야 하는 사례
-        heading = 58.38452767817171       # 가중치에 후보지 개수를 추가해야 하는 사례
-        print('heading: ', heading)
+    # 3. 섹터 생성
+    radius_deg = SECTOR_RADIUS / 111  # 도 단위로 변환
+    sector_points = generate_sector(uam_location, radius_deg, SECTOR_ANGLE, uam_heading)
 
-        sector_points = generate_sector(uam_location, radius_deg, sector_angle, heading)
+    # 4. 필터링된 데이터를 섹터 내 포인트만 남기기
+    filtered_data = processed_data[processed_data['centroid'].apply(
+        lambda c: is_within_sector(c, uam_location, radius_deg, SECTOR_ANGLE, uam_heading)
+    )]
 
-        # 4. 필터링된 데이터를 섹터 내 포인트만 남기기
-        filtered_data = processed_data[processed_data['centroid'].apply(
-            lambda c: is_within_sector(c, uam_location, radius_deg, sector_angle, heading)
-        )]
+    # 6. DBSCAN 클러스터링 수행 및 결과 출력
+    clusters, vertices_array = perform_dbscan_clustering(filtered_data)
 
-        if filtered_data.empty:
-            print("No data in filtered polygons. Adjust your filtering criteria.")
+    if vertices_array.size != 0:
+        # 같은 폴리곤이 여러 클러스터에 걸쳐 있는지 확인
+        multiple_cluster_polygons = find_polygons_in_multiple_clusters(filtered_data, clusters, vertices_array)
+        if multiple_cluster_polygons:
+            # print_color(f"Polygons spanning multiple clusters found at indices: {multiple_cluster_polygons}", color="yellow")
+            
+            # 클러스터 병합
+            clusters = merge_clusters(filtered_data, clusters, vertices_array)
 
-        # 5. 필터링된 폴리곤 및 섹터 시각화
-        # visualize_polygons_and_sector(filtered_data, sector_points, uam_location)
+        # 7. 클러스터별 가중치 계산
+        # 클러스터별 면적, 거리, 클러스터 내 후보지 개수 저장
+        cluster_areas, cluster_distances, cluster_counts = assign_cluster_properties(filtered_data, clusters, vertices_array, uam_location)
 
-        # 6. DBSCAN 클러스터링 수행 및 결과 출력
-        clusters, vertices_array = perform_dbscan_clustering(filtered_data)
-        # print("DBSCAN Clustering Result:", clusters)
+        # 클러스터별 가중치 계산
+        cluster_weights = calculate_cluster_weights(cluster_areas, cluster_distances, cluster_counts)
+        print("Cluster Weights:", cluster_weights)
 
-        if vertices_array.size != 0:
-            # 같은 폴리곤이 여러 클러스터에 걸쳐 있는지 확인
-            multiple_cluster_polygons = find_polygons_in_multiple_clusters(filtered_data, clusters, vertices_array)
-            if multiple_cluster_polygons:
-                # print_color(f"Polygons spanning multiple clusters found at indices: {multiple_cluster_polygons}", color="yellow")
-                # 클러스터 병합
-                clusters = merge_clusters(filtered_data, clusters, vertices_array)
+        # 8. 최적의 클러스터 선택
+        optimal_cluster_id, optimal_weight = select_optimal_cluster(cluster_weights)
 
-                # # 병합된 결과 확인
-                # print("Merged Clusters:", clusters)
-            else:
-                print("All polygons belong to a single cluster.")
-
-            # 클러스터별 좌표 출력
-            # print_cluster_coordinates(clusters, vertices_array)
-
-            # 7. 클러스터별 가중치 계산
-            # 클러스터별 면적, 거리 저장
-            # cluster_areas, cluster_distances = assign_cluster_properties(filtered_data, clusters, vertices_array, uam_location)
-            cluster_areas, cluster_distances, cluster_counts = assign_cluster_properties_new(filtered_data, clusters, vertices_array, uam_location)
-
-            # 클러스터별 가중치 계산
-            # cluster_weights = calculate_cluster_weights(cluster_areas, cluster_distances)
-            cluster_weights = calculate_cluster_weights_new(cluster_areas, cluster_distances, cluster_counts)
-            print("Cluster Weights:", cluster_weights)
-
-            # 8. 최적의 클러스터 선택
-            optimal_cluster_id, optimal_weight = select_optimal_cluster(cluster_weights)
-
-            # 실루엣 계수 계산
-            # silhouette_score_value = calculate_silhouette_score(vertices_array, clusters)
-
-            # 클러스터링 결과 시각화
-            # visualize_clusters_new(filtered_data, sector_points, uam_location, clusters, vertices_array)
-            visualize_clusters_new(filtered_data, sector_points, uam_location, clusters, vertices_array, optimal_cluster_id)
-
-            # 대표 클러스터 원 시각화
-            # if multiple_cluster_polygons:
-            #     visualize_clusters_new(filtered_data, sector_points, uam_location, clusters, vertices_array, optimal_cluster_id)
+        # 클러스터링 결과 시각화
+        visualize_clusters(filtered_data, sector_points, uam_location, clusters, vertices_array)
     
-            # if silhouette_score_value is not None and silhouette_score_value < 0.5:
-                # visualize_clusters_new(filtered_data, sector_points, uam_location, clusters, vertices_array, optimal_cluster_id)
-    
-
-# 메인 실행 부분
-if __name__ == "__main__":
-    clustering()
