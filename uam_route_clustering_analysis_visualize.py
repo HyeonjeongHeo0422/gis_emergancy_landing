@@ -108,7 +108,8 @@ ax2.set_ylim(0,4)
 # Add legends
 lines_1, labels_1 = ax1.get_legend_handles_labels()
 lines_2, labels_2 = ax2.get_legend_handles_labels()
-ax1.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper center', fontsize=20)
+# ax1.legend(lines_1 + lines_2, labels_1 + labels_2 + , loc='upper center', fontsize=20)
+ax1.legend(lines_2 + lines_1, labels_2 + labels_1, loc='upper center', fontsize=20)
 
 # Final adjustments
 plt.xlim(0, len(results_df) - 1)  # x축 범위를 0에서 데이터 개수로 설정

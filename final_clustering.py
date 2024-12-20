@@ -1,18 +1,4 @@
-import pandas as pd
-from shapely.wkt import loads as wkt_loads
-from shapely.geometry import Point
-import shapely.errors
-import random
-import numpy as np
-import math
-from matplotlib.patches import Patch, Circle
-import geopandas as gpd
-import matplotlib.pyplot as plt
-from sklearn.cluster import DBSCAN
-from collections import defaultdict
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import silhouette_score
-from haversine import haversine
+from library import *
 from params import *
 
 # 1. 데이터 로드 및 전처리
@@ -180,7 +166,7 @@ def find_polygons_in_multiple_clusters(filtered_data, clusters, vertices_array):
             # 클러스터 레이블이 2개 이상이면 폴리곤이 여러 클러스터에 걸쳐 있음
             if len(cluster_labels) > 1:
                 multiple_cluster_polygons.append(idx)
-                print(f"Polygon {idx} spans multiple clusters: {cluster_labels}")
+                # print(f"Polygon {idx} spans multiple clusters: {cluster_labels}")
 
     return multiple_cluster_polygons
 
@@ -203,7 +189,7 @@ def select_optimal_cluster(cluster_weights):
     optimal_cluster_id = max(cluster_weights, key=cluster_weights.get)
     optimal_weight = cluster_weights[optimal_cluster_id]
     
-    print(f"Optimal Cluster ID: {optimal_cluster_id}, Weight: {optimal_weight}")
+    # print(f"Optimal Cluster ID: {optimal_cluster_id}, Weight: {optimal_weight}")
     return optimal_cluster_id, optimal_weight
 
 def print_cluster_coordinates(clusters, vertices_array):
@@ -477,48 +463,83 @@ def clustering(file_path, uam_heading):
     """
     클러스터링 작업의 첫 번째 단계: 데이터 로드 및 전처리.
     """
+    print_color('Clustering...','yellow')
+
     # 1. 데이터 로드 및 전처리
     processed_data = load_and_preprocess_data(file_path)
     if processed_data.empty:
         print("Processed data is empty. Check your input file.")
 
-    # 2. 랜덤한 폴리곤 내에서 랜덤한 포인트 생성
+    ### 임시 ###
+    # 랜덤한 폴리곤 내에서 랜덤한 포인트 생성
     random_polygon = processed_data['geometry'].sample(1).values[0]
     uam_location = random_point_in_polygon(random_polygon)  # 랜덤 포인트 생성
-    print('uam_location: ', uam_location)
+    ############
 
-    # 3. 섹터 생성
+    # 2. Sector
+    # 섹터 생성
     radius_deg = SECTOR_RADIUS / 111  # 도 단위로 변환
     sector_points = generate_sector(uam_location, radius_deg, SECTOR_ANGLE, uam_heading)
 
-    # 4. 필터링된 데이터를 섹터 내 포인트만 남기기
+    # 필터링된 데이터를 섹터 내 포인트만 남기기
     filtered_data = processed_data[processed_data['centroid'].apply(
         lambda c: is_within_sector(c, uam_location, radius_deg, SECTOR_ANGLE, uam_heading)
-    )]
+    )].copy()
 
-    # 6. DBSCAN 클러스터링 수행 및 결과 출력
+    # 3. DBSCAN 클러스터링 수행 및 결과 출력
     clusters, vertices_array = perform_dbscan_clustering(filtered_data)
 
     if vertices_array.size != 0:
         # 같은 폴리곤이 여러 클러스터에 걸쳐 있는지 확인
         multiple_cluster_polygons = find_polygons_in_multiple_clusters(filtered_data, clusters, vertices_array)
-        if multiple_cluster_polygons:
-            # print_color(f"Polygons spanning multiple clusters found at indices: {multiple_cluster_polygons}", color="yellow")
-            
+        if multiple_cluster_polygons:          
             # 클러스터 병합
             clusters = merge_clusters(filtered_data, clusters, vertices_array)
 
-        # 7. 클러스터별 가중치 계산
+        # 4. 각 폴리곤에 클러스터 ID 할당
+        polygon_clusters = []
+        for geom in filtered_data['geometry']:
+            if geom is not None:
+                coords = np.array(geom.exterior.coords)
+                cluster_labels = [clusters[i] for i, vertex in enumerate(vertices_array) if tuple(vertex) in coords]
+                # 가장 빈도가 높은 클러스터 ID 할당
+                cluster_id = max(set(cluster_labels), key=cluster_labels.count) if cluster_labels else -1
+                polygon_clusters.append(cluster_id)
+            else:
+                polygon_clusters.append(-1)
+
+        filtered_data['cluster'] = polygon_clusters
+
+        # 5. 클러스터별 가중치 계산
         # 클러스터별 면적, 거리, 클러스터 내 후보지 개수 저장
         cluster_areas, cluster_distances, cluster_counts = assign_cluster_properties(filtered_data, clusters, vertices_array, uam_location)
 
         # 클러스터별 가중치 계산
         cluster_weights = calculate_cluster_weights(cluster_areas, cluster_distances, cluster_counts)
-        print("Cluster Weights:", cluster_weights)
 
-        # 8. 최적의 클러스터 선택
+        # 6. 최적의 클러스터 선택
         optimal_cluster_id, optimal_weight = select_optimal_cluster(cluster_weights)
 
+        top_cluster_info = filtered_data[filtered_data['cluster'] == optimal_cluster_id]
+        top_cluster_info = top_cluster_info[['geometry', 'safe_center']]    # 필요한 열만 선택
+
+        print_color('Top Cluster Info','yellow')
+        print(top_cluster_info)
+
+        # UAM과 가장 가까운 safe_center 계산
+        if not top_cluster_info.empty:
+            top_cluster_info['distance_to_uam'] = top_cluster_info['safe_center'].apply(
+                lambda x: haversine((uam_location.y, uam_location.x), (x.y, x.x))
+            )
+            closest_point = top_cluster_info.loc[top_cluster_info['distance_to_uam'].idxmin(), 'safe_center']
+        else:
+            closest_point = None
+
+        print_color('Waypoint','yellow')
+        print(closest_point)
+        print_color('-'*30,'yellow')
+
         # 클러스터링 결과 시각화
-        visualize_clusters(filtered_data, sector_points, uam_location, clusters, vertices_array)
+        # visualize_clusters(filtered_data, sector_points, uam_location, clusters, vertices_array)
     
+        return top_cluster_info, closest_point, uam_location

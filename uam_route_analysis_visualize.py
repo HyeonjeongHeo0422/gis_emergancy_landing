@@ -5,6 +5,7 @@ import geopandas as gpd
 from shapely.geometry import Polygon, MultiLineString, Point, LineString
 import matplotlib.pyplot as plt
 from clustering_new import generate_sector, is_within_sector, load_and_preprocess_data, visualize_polygons_and_sector
+# from clustering_new import *
 from tqdm import tqdm
 from geopy.distance import geodesic
 import numpy as np
@@ -124,12 +125,14 @@ def is_within_radius(current_point, destination_point, radius_km):
 
 # 필터링된 폴리곤 데이터를 로드
 # file_path = 'results/filtering/UAM/uam_route_filtered_polygons_new.csv'
-file_path = 'results/filtering/UAM/uam_route_filtered_polygons_4km.csv'
+# file_path = 'results/filtering/UAM/uam_route_filtered_polygons_4km.csv'
+file_path = 'results/filtering/UAM/uam_route_filtered_polygons_4km_with_center.csv'
 processed_data = load_and_preprocess_data(file_path)
 
 # 시작점과 종료점
 start_point = (35.88881, 128.52540) # 금호JC
-end_point = (36.28081, 128.58175)   # 대구경북통합신공항 예정지 부근
+# end_point = (36.28081, 128.58175)   # 대구경북통합신공항 예정지 부근
+end_point = (36.2539, 128.5676)   # 대구경북통합신공항 예정지 부근
 
 # GeoJSON 파일 불러오기
 highway_file_path = 'data/geojson/export.geojson'       # 중앙고속도로
@@ -224,7 +227,7 @@ for i in range(len(filtered_waypoints) - 1):
 
 # 데이터프레임으로 변환하여 CSV 파일로 저장
 df = pd.DataFrame(waypoint_data)
-# df.to_csv('results/filtering/UAM/waypoint_analysis_new.csv', index=False, encoding='utf-8')
+# df.to_csv('results/filtering/UAM/waypoint_analysis_new_IC.csv', index=False, encoding='utf-8')
 # print("waypoint_analysis.csv 파일로 저장 완료")
 
 
@@ -239,47 +242,6 @@ average_max_area = df['max_area'].mean()
 # 결과 출력
 print(f"평균 후보지 개수: {average_candidates:.2f}")
 print(f"평균 최대 면적 (km²): {average_max_area:.2f}")
-
-# # 후보지 개수 시각화
-# plt.figure(figsize=(12, 6))
-# plt.plot(
-#     df.index, 
-#     df['candidate_count'], 
-#     linestyle='-', 
-#     linewidth=2, 
-#     color='black',  # 선 색을 검은색으로 설정
-#     label='Candidate Count'
-# )
-# plt.xlabel('Waypoint Index', fontsize=20)  # X축 제목 글꼴 크기
-# plt.ylabel('Candidate Count', fontsize=20)  # Y축 제목 글꼴 크기
-# plt.title('Candidate Count for Each Waypoint', fontsize=20)  # 제목 글꼴 크기
-# plt.xticks(ticks=np.linspace(0, len(df.index)-1, num=10, dtype=int), fontsize=20)  # X축 Ticks 글꼴 크기
-# plt.yticks(fontsize=20)  # Y축 Ticks 글꼴 크기
-# plt.grid(alpha=0.5)
-# plt.legend(fontsize=20)  # 범례 글꼴 크기
-# plt.tight_layout()
-
-# # 최대 면적 시각화
-# plt.figure(figsize=(12, 6))
-# plt.plot(
-#     df.index, 
-#     df['max_area'], 
-#     linestyle='-', 
-#     linewidth=2, 
-#     color='black',  # 선 색을 검은색으로 설정
-#     label='Max Area (km²)'
-# )
-# plt.xlabel('Waypoint Index', fontsize=20)  # X축 제목 글꼴 크기
-# plt.ylabel('Max Area (km²)', fontsize=20)  # Y축 제목 글꼴 크기
-# plt.title('Maximum Area for Each Waypoint', fontsize=20)  # 제목 글꼴 크기
-# plt.xticks(ticks=np.linspace(0, len(df.index)-1, num=10, dtype=int), fontsize=20)  # X축 Ticks 글꼴 크기
-# plt.yticks(fontsize=20)  # Y축 Ticks 글꼴 크기
-# plt.grid(alpha=0.5)
-# plt.legend(fontsize=20)  # 범례 글꼴 크기
-# plt.tight_layout()
-
-# plt.show()
-
 
 fig, ax1 = plt.subplots(figsize=(12, 6))
 
@@ -324,5 +286,5 @@ fig.legend(
 # plt.title('Candidate Count and Maximum Area for Each Waypoint', fontsize=20)
 
 plt.tight_layout()
-plt.show()
+# plt.show()
 

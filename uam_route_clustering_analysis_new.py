@@ -13,7 +13,6 @@ from collections import defaultdict
 from sklearn.preprocessing import MinMaxScaler
 from haversine import haversine
 from tqdm import tqdm
-import time
 
 # 1. 데이터 로드 및 전처리
 def load_and_preprocess_data(file_path):
@@ -31,6 +30,7 @@ def load_and_preprocess_data(file_path):
     data['geometry'] = data['Polygon'].apply(safe_load_wkt)
     data = data[data['geometry'].notnull()]
     data['centroid'] = data['Centroid'].apply(lambda x: Point(eval(x)) if pd.notnull(x) else None)
+    data['safe_center'] = data['Safe Center Point'].apply(lambda x: Point(eval(x)) if pd.notnull(x) else None)
 
     return data
 
@@ -118,8 +118,6 @@ def is_within_sector(point, center, radius, angle, heading):
 ############################################################
 # 3. 클러스터링
 def perform_dbscan_clustering(filtered_data, eps=0.001, min_samples=3):
-# def perform_dbscan_clustering(filtered_data, eps=0.027, min_samples=3):
-# def perform_dbscan_clustering(filtered_data, eps=0.007, min_samples=3):
     """
     DBSCAN을 이용해 필터링된 폴리곤들의 꼭짓점을 클러스터링하는 함수.
 
@@ -149,14 +147,11 @@ def perform_dbscan_clustering(filtered_data, eps=0.001, min_samples=3):
 
     # 데이터 형태 확인 및 변환
     if vertices_array.ndim == 1 or vertices_array.shape[1] != 2:
-        # print("Reshaping vertices_array to 2D format.")
-        # print_color("Reshaping vertices_array to 2D format.", color="yellow")
         vertices_array = vertices_array.reshape(-1, 2)
 
     # DBSCAN 클러스터링 수행
     dbscan = DBSCAN(eps=eps, min_samples=min_samples)
     clusters = dbscan.fit_predict(vertices_array)
-    # print('clusters: ', clusters)
 
     return clusters, vertices_array
 
@@ -183,7 +178,6 @@ def find_polygons_in_multiple_clusters(filtered_data, clusters, vertices_array):
             # 클러스터 레이블이 2개 이상이면 폴리곤이 여러 클러스터에 걸쳐 있음
             if len(cluster_labels) > 1:
                 multiple_cluster_polygons.append(idx)
-                # print(f"Polygon {idx} spans multiple clusters: {cluster_labels}")
 
     return multiple_cluster_polygons
 
@@ -199,14 +193,12 @@ def select_optimal_cluster(cluster_weights):
     - optimal_weight (float): 최적의 가중치 값.
     """
     if not cluster_weights:
-        # print("No cluster weights provided.")
         return None, None
 
     # 가중치가 가장 큰 클러스터 찾기
     optimal_cluster_id = max(cluster_weights, key=cluster_weights.get)
     optimal_weight = cluster_weights[optimal_cluster_id]
 
-    # print(f"Optimal Cluster ID: {optimal_cluster_id}, Weight: {optimal_weight}")
     return optimal_cluster_id, optimal_weight
 
 def print_cluster_coordinates(clusters, vertices_array):
@@ -278,100 +270,6 @@ def merge_clusters(filtered_data, clusters, vertices_array):
 
 ############################################################
 # 가중치 계산
-def assign_cluster_properties(filtered_data, clusters, vertices_array, uam_location):
-    """
-    각 클러스터별로 폴리곤 면적의 합과 UAM 위치와의 최소 거리를 저장하는 함수.
-
-    Parameters:
-    - filtered_data (pd.DataFrame): 필터링된 폴리곤 데이터프레임.
-    - clusters (np.ndarray): DBSCAN 클러스터 레이블 배열.
-    - vertices_array (np.ndarray): 각 꼭짓점의 좌표 배열.
-    - uam_location (Point): UAM 위치.
-
-    Returns:
-    - cluster_areas (defaultdict): 클러스터 ID별 면적 합계.
-    - cluster_distances (defaultdict): 클러스터 ID별 UAM 위치와의 최소 거리.
-    """
-    cluster_areas = defaultdict(float)        # 클러스터별 면적 합계
-    cluster_distances = defaultdict(lambda: float('inf'))  # 클러스터별 최소 거리
-
-    # 각 폴리곤의 면적과 거리를 클러스터별로 저장
-    for polygon_idx, geom in enumerate(filtered_data['geometry']):
-        if geom is not None:
-            coords = np.array(geom.exterior.coords)
-            cluster_labels = [clusters[i] for i, vertex in enumerate(vertices_array) if tuple(vertex) in coords]
-
-            # 각 폴리곤이 속한 클러스터를 가장 많이 등장한 cluster_id로 설정
-            if cluster_labels:
-                cluster_id = max(set(cluster_labels), key=cluster_labels.count)
-
-                # 노이즈 클러스터는 제외
-                if cluster_id != -1:
-                    area = filtered_data.iloc[polygon_idx]['Area (m^2)']
-                    centroid = filtered_data.iloc[polygon_idx]['centroid']
-
-                    # 클러스터별 면적 합계 갱신
-                    cluster_areas[cluster_id] += area
-
-                    # 현재 폴리곤의 중심점과 UAM 위치 간의 거리 계산
-                    distance_to_uam = centroid.distance(Point(uam_location))
-
-                    # 클러스터별 최소 거리 갱신
-                    if distance_to_uam < cluster_distances[cluster_id]:
-                        cluster_distances[cluster_id] = distance_to_uam
-
-    return cluster_areas, cluster_distances
-
-# def assign_cluster_properties_new(filtered_data, clusters, vertices_array, uam_location):
-#     """
-#     각 클러스터별로 폴리곤 면적의 합, UAM 위치와의 최소 거리, 폴리곤 개수를 저장하는 함수.
-
-#     Parameters:
-#     - filtered_data (pd.DataFrame): 필터링된 폴리곤 데이터프레임.
-#     - clusters (np.ndarray): DBSCAN 클러스터 레이블 배열.
-#     - vertices_array (np.ndarray): 각 꼭짓점의 좌표 배열.
-#     - uam_location (Point): UAM 위치.
-
-#     Returns:
-#     - cluster_areas (defaultdict): 클러스터 ID별 면적 합계.
-#     - cluster_distances (defaultdict): 클러스터 ID별 UAM 위치와의 최소 거리.
-#     - cluster_counts (defaultdict): 클러스터 ID별 폴리곤 개수.
-#     """
-#     cluster_areas = defaultdict(float)        # 클러스터별 면적 합계
-#     cluster_distances = defaultdict(lambda: float('inf'))  # 클러스터별 최소 거리
-#     cluster_counts = defaultdict(int)         # 클러스터별 폴리곤 개수
-
-#     # 각 폴리곤의 면적과 거리를 클러스터별로 저장
-#     for polygon_idx, geom in enumerate(filtered_data['geometry']):
-#         if geom is not None:
-#             coords = np.array(geom.exterior.coords)
-#             cluster_labels = [clusters[i] for i, vertex in enumerate(vertices_array) if tuple(vertex) in coords]
-
-#             # 각 폴리곤이 속한 클러스터를 가장 많이 등장한 cluster_id로 설정
-#             if cluster_labels:
-#                 cluster_id = max(set(cluster_labels), key=cluster_labels.count)
-
-#                 # 노이즈 클러스터는 제외
-#                 if cluster_id != -1:
-#                     area = filtered_data.iloc[polygon_idx]['Area (m^2)']
-#                     centroid = filtered_data.iloc[polygon_idx]['centroid']
-
-#                     # 클러스터별 면적 합계 갱신
-#                     cluster_areas[cluster_id] += area
-
-#                     # 현재 폴리곤의 중심점과 UAM 위치 간의 거리 계산
-#                     distance_to_uam = centroid.distance(Point(uam_location))
-
-#                     # 클러스터별 최소 거리 갱신
-#                     if distance_to_uam < cluster_distances[cluster_id]:
-#                         cluster_distances[cluster_id] = distance_to_uam
-
-#                     # 클러스터별 폴리곤 개수 증가
-#                     cluster_counts[cluster_id] += 1
-
-#     # return cluster_areas, cluster_distances, cluster_counts
-#     return dict(cluster_areas), dict(cluster_distances), dict(cluster_counts)
-
 def assign_cluster_properties_new(filtered_data, clusters, vertices_array, uam_location):
     """
     각 클러스터별로 폴리곤 면적의 합, UAM 위치와의 최소 거리, 폴리곤 개수를 저장하는 함수.
@@ -390,6 +288,7 @@ def assign_cluster_properties_new(filtered_data, clusters, vertices_array, uam_l
     cluster_areas = defaultdict(float)        # 클러스터별 면적 합계
     cluster_distances = defaultdict(lambda: float('inf'))  # 클러스터별 최소 거리
     cluster_counts = defaultdict(int)         # 클러스터별 폴리곤 개수
+    cluster_safe_centers = defaultdict(list)  # 클러스터별 폴리곤의 safe center
 
     # UAM 위치를 위도, 경도 튜플로 변환
     uam_coords = (uam_location.y, uam_location.x)  # Point(y, x) -> (lat, lon)
@@ -407,25 +306,29 @@ def assign_cluster_properties_new(filtered_data, clusters, vertices_array, uam_l
                 # 노이즈 클러스터는 제외
                 if cluster_id != -1:
                     area = filtered_data.iloc[polygon_idx]['Area (m^2)']
-                    centroid = filtered_data.iloc[polygon_idx]['centroid']
+                    # centroid = filtered_data.iloc[polygon_idx]['centroid']
+                    safe_center_point = filtered_data.iloc[polygon_idx]['safe_center']
 
                     # 클러스터별 면적 합계 갱신
                     cluster_areas[cluster_id] += area
 
                     # 현재 폴리곤의 중심점 좌표를 위도, 경도로 변환
-                    centroid_coords = (centroid.y, centroid.x)  # Point(y, x) -> (lat, lon)
+                    # centroid_coords = (centroid.y, centroid.x)  # Point(y, x) -> (lat, lon)
+                    safe_center_coords = (safe_center_point.y, safe_center_point.x)  # Point(y, x) -> (lat, lon)
 
                     # Haversine 거리 계산
-                    distance_to_uam = haversine(centroid_coords, uam_coords)
+                    # distance_to_uam = haversine(centroid_coords, uam_coords)
+                    distance_to_uam = haversine(safe_center_coords, uam_coords)
 
                     # 클러스터별 최소 거리 갱신
                     if distance_to_uam < cluster_distances[cluster_id]:
                         cluster_distances[cluster_id] = distance_to_uam
+                        cluster_safe_centers[cluster_id] = safe_center_point
 
                     # 클러스터별 폴리곤 개수 증가
                     cluster_counts[cluster_id] += 1
 
-    return dict(cluster_areas), dict(cluster_distances), dict(cluster_counts)
+    return dict(cluster_areas), dict(cluster_distances), dict(cluster_counts), dict(cluster_safe_centers)
 
 
 def calculate_cluster_weights_new(cluster_areas, cluster_distances, cluster_counts):
@@ -493,117 +396,6 @@ def calculate_cluster_weights_new(cluster_areas, cluster_distances, cluster_coun
 
 ############################################################
 # 시각화
-def visualize_polygons_and_sector(filtered_data, sector_points, uam_location):
-    """
-    필터링된 폴리곤과 섹터를 시각화하는 함수.
-
-    Parameters:
-    - filtered_data (pd.DataFrame): 필터링된 폴리곤 데이터프레임.
-    - sector_points (list[Point]): 섹터를 구성하는 포인트 리스트.
-    - uam_location (Point): UAM의 랜덤 위치.
-    """
-    # 시각화 시작
-    fig, ax = plt.subplots(1, 1, figsize=(12, 12))
-
-    # 섹터 시각화
-    sector_x = [p.x for p in sector_points]
-    sector_y = [p.y for p in sector_points]
-    # plt.fill(sector_x, sector_y, alpha=0.3, color='blue', label='80° Sector')
-    # plt.fill(sector_x, sector_y, alpha=0.5, color='gray', label='80° Sector')
-    plt.plot(sector_x + [sector_x[0]], sector_y + [sector_y[0]], color='black', linewidth=2, label='Sector Boundary')
-
-    # 필터링된 폴리곤을 GeoSeries를 사용하여 시각화 (유사한 방식으로 처리)
-    for geom in filtered_data['geometry']:
-        if geom is not None:
-            # gpd.GeoSeries([geom], crs='epsg:4326').plot(ax=ax, color='green', alpha=0.6)
-            gpd.GeoSeries([geom], crs='epsg:4326').plot(ax=ax, color='plum')
-
-    # # 대표점 표시
-    # for centroid in filtered_data['centroid'].dropna():
-    #     ax.scatter(centroid.x, centroid.y, color='blue', s=50, label='Centroid')
-
-    # UAM 위치를 검은색으로 표시
-    ax.scatter(uam_location.x, uam_location.y, color='red', marker='*', s=150, label='UAM Location')
-
-    # 범례 설정
-    legend_patches = [
-        # Patch(color='blue', alpha=0.3, label='180° Sector'),
-        # Patch(color='gray', alpha=0.5, label='180° Sector'),
-        # Patch(facecolor='green', alpha=0.6, label='Landing Able Sites'),
-        # Patch(facecolor='plum', label='Landing Able Sites')
-    ]
-    ax.legend(handles=legend_patches)
-
-    # 축 및 제목 설정
-    ax.set_xlabel('Longitude')
-    ax.set_ylabel('Latitude')
-    ax.set_title('Filtered Polygons and Sector with UAM Location and Centroids')
-
-    # 결과 시각화 표시
-    plt.show()
-
-    return fig
-
-def visualize_clusters(filtered_data, sector_points, uam_location, clusters, vertices_array):
-    """
-    필터링된 폴리곤, 섹터, 그리고 클러스터링 결과를 시각화하는 함수.
-
-    Parameters:
-    - filtered_data (pd.DataFrame): 필터링된 폴리곤 데이터프레임.
-    - sector_points (list[Point]): 섹터를 구성하는 포인트 리스트.
-    - uam_location (Point): UAM의 랜덤 위치.
-    - clusters (np.ndarray): DBSCAN 클러스터 레이블 배열.
-    - vertices_array (np.ndarray): 각 꼭짓점의 좌표 배열.
-    """
-    # 시각화 시작
-    fig, ax = plt.subplots(1, 1, figsize=(12, 12))
-
-    # 섹터 시각화
-    sector_x = [p.x for p in sector_points]
-    sector_y = [p.y for p in sector_points]
-    ax.plot(sector_x, sector_y, color='black', linewidth=2, label='Sector')
-
-    # 클러스터별 색상을 생성
-    unique_labels = set(clusters)
-    colors = plt.cm.Spectral(np.linspace(0, 1, len(unique_labels)))
-    label_to_color = {label: color for label, color in zip(unique_labels, colors)}
-
-    # 각 폴리곤에 대해 클러스터 색상 할당
-    for geom in filtered_data['geometry']:
-        if geom is not None:
-            # 폴리곤의 첫 번째 꼭짓점을 기준으로 클러스터 레이블을 가져옴
-            coords = np.array(geom.exterior.coords)
-            cluster_indices = [
-                clusters[i] for i, vertex in enumerate(vertices_array) if tuple(vertex) in coords
-            ]
-            # 가장 많이 등장한 클러스터 레이블을 폴리곤의 클러스터로 간주
-            cluster_label = max(set(cluster_indices), key=cluster_indices.count) if cluster_indices else -1
-            edge_color = 'k' if cluster_label == -1 else label_to_color[cluster_label]
-
-            # 경계선만 표시
-            gpd.GeoSeries([geom], crs='epsg:4326').plot(ax=ax, edgecolor=edge_color, facecolor='plum', linewidth=2)
-
-    # 범례에 각 클러스터 색상 및 레이블 추가
-    legend_handles = []
-    for label, color in label_to_color.items():
-        legend_label = f"Cluster {label}" if label != -1 else "Noise"
-        legend_handles.append(Patch(edgecolor=color, facecolor='none', linewidth=2, label=legend_label))
-
-    # UAM 위치를 빨간색 별표로 표시
-    ax.scatter(uam_location.x, uam_location.y, color='red', marker='*', s=150, label='UAM Location')
-
-    # 범례 설정
-    ax.legend(handles=legend_handles, bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0.)
-    ax.set_xlabel('Longitude')
-    ax.set_ylabel('Latitude')
-    # ax.set_title('Filtered Polygons, Sector, and Clustering Results with UAM Location')
-
-    # 결과 시각화 표시
-    plt.show()
-
-    return fig
-
-
 def visualize_clusters_new(filtered_data, sector_points, uam_location, clusters, vertices_array, optimal_cluster_id=None):
     """
     필터링된 폴리곤, 섹터, 최적 클러스터 중심에 하나의 큰 파란색 원을 추가한 클러스터링 결과 시각화 함수.
@@ -707,25 +499,19 @@ def clustering():
     results = []
 
     # waypoint 데이터 로드
-    # waypoint_file = 'results/filtering/UAM/waypoint_analysis_new.csv'
+    # waypoint_file = 'waypoint_analysis_new.csv'
     waypoint_file = 'results/filtering/UAM/waypoint_analysis_new_IC.csv'
     waypoint_data = pd.read_csv(waypoint_file)
 
     # GIS 데이터 로드
-    start_time = time.time()
+    # file_path = f'uam_route_filtered_polygons_4km_with_center.csv'
     file_path = f'results/filtering/UAM/uam_route_filtered_polygons_4km_with_center.csv'
     processed_data = load_and_preprocess_data(file_path)
-    end_time = time.time()
-    print_color('loading time: ', color="yellow")
-    print_color(end_time-start_time, color="yellow")
 
     no_data = 0
 
     # waypoint 데이터를 순차적으로 사용
-    # for _, row in waypoint_data.iterrows():
     for _, row in tqdm(waypoint_data.iterrows(), total=len(waypoint_data), desc="Processing waypoints"):
-        # print('row: ', row)
-
         # UAM 위치 및 heading 정보 추출
         uam_lat = row['waypoint_lat']
         uam_lon = row['waypoint_lon']
@@ -741,7 +527,7 @@ def clustering():
         sector_points = generate_sector(uam_location, radius_deg, sector_angle, heading)
 
         # 섹터 내 폴리곤 필터링
-        filtered_data = processed_data[processed_data['centroid'].apply(
+        filtered_data = processed_data[processed_data['safe_center'].apply(
             lambda c: is_within_sector(c, uam_location, radius_deg, sector_angle, heading)
         )]
 
@@ -751,43 +537,52 @@ def clustering():
         if vertices_array.size != 0:
             # 같은 폴리곤이 여러 클러스터에 걸쳐 있는지 확인
             multiple_cluster_polygons = find_polygons_in_multiple_clusters(filtered_data, clusters, vertices_array)
-
             if multiple_cluster_polygons:
-                # print_color(f"Polygons spanning multiple clusters found at indices: {multiple_cluster_polygons}", color="yellow")
                 # 클러스터 병합
                 clusters = merge_clusters(filtered_data, clusters, vertices_array)
-            # else:
-                # print("All polygons belong to a single cluster.")
 
             # 클러스터 속성 계산
-            cluster_areas, cluster_distances, cluster_counts = assign_cluster_properties_new(
+            cluster_areas, cluster_distances, cluster_counts, cluster_safe_center = assign_cluster_properties_new(
                 filtered_data, clusters, vertices_array, uam_location
             )
             num_clusters = len(cluster_areas)
 
             # 클러스터별 가중치 계산
             cluster_weights = calculate_cluster_weights_new(cluster_areas, cluster_distances, cluster_counts)
-            # print("Cluster Weights:", cluster_weights)
 
             # 8. 최적의 클러스터 선택
             optimal_cluster_id, optimal_weight = select_optimal_cluster(cluster_weights)
 
             if optimal_cluster_id is not None:
                 # 최적 클러스터 면적 및 거리 추출
-                optimal_area = cluster_areas[optimal_cluster_id]
                 optimal_distance = cluster_distances[optimal_cluster_id]
+                optimal_area = cluster_areas[optimal_cluster_id]
+                optimal_count = cluster_counts[optimal_cluster_id]
+                optimal_safe_center = cluster_safe_center[optimal_cluster_id]
 
+                # 시각화
+                # visualize_clusters_new(filtered_data, sector_points, uam_location, clusters, vertices_array, optimal_cluster_id)
+
+                # 결과 저장
                 results.append({
-                    'Cluster_Count': num_clusters,
+                    # 'Cluster_Count': num_clusters,
+                    'Distance_to_UAM': optimal_distance,
                     'Optimal_Cluster_Area': optimal_area,
-                    'Distance_to_UAM': optimal_distance
+                    'Optimal_Cluster_Polygon_Count': optimal_count,
+                    'Optimal_Cluster_Safe_Center': optimal_safe_center,
+                    'UAM_Location': uam_location,
+                    'UAM_Heading': heading
                 })
         else:
             no_data += 1
             results.append({
-                    'Cluster_Count': 0,
+                    # 'Cluster_Count': 0,
+                    'Distance_to_UAM': 0,
                     'Optimal_Cluster_Area': 0,
-                    'Distance_to_UAM': 0
+                    'Optimal_Cluster_Polygon_Count': 0,
+                    'Optimal_Cluster_Safe_Center': 0,
+                    'UAM_Location': uam_location,
+                    'UAM_Heading': heading
                 })
 
     print(f'후보지가 없다 횟수: {no_data}')
@@ -796,7 +591,8 @@ def clustering():
     results_df = pd.DataFrame(results)
 
     # 결과 저장
-    # results_df.to_csv('results/clustering/uam_waypoint_cluster_analysis_new.csv', index=False)
+    # results_df.to_csv('results/uam_waypoint_cluster_analysis_with_centers.csv', index=False)
+    results_df.to_csv('results/clustering/uam_new_waypoint_cluster_analysis_new.csv', index=False)
 
 # 메인 실행 부분
 if __name__ == "__main__":
